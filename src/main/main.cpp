@@ -69,7 +69,7 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.5/chat";
-const char *websockets_server1 = "ws://120.76.98.140/wss"; // 更新 WebSocket 服务器 URL
+const char *websockets_server1 = "ws://ws-api.xfyun.cn/v2/iat";
 using namespace websockets;
 
 WebsocketsClient webSocketClient;
@@ -188,7 +188,6 @@ void onEventsCallback(WebsocketsEvent event, String data)
     }
 }
 
-
 void onMessageCallback1(WebsocketsMessage message)
 {
     StaticJsonDocument<4096> jsonDocument;
@@ -205,7 +204,7 @@ void onMessageCallback1(WebsocketsMessage message)
         }
         else
         {
-            Serial.println("Server return message:");
+            Serial.println("xunfeiyun return message:");
             Serial.println(message.data());
             JsonArray ws = jsonDocument["data"]["result"]["ws"].as<JsonArray>();
 
@@ -225,11 +224,55 @@ void onMessageCallback1(WebsocketsMessage message)
                 if (askquestion == "")
                 {
                     askquestion = "sorry, i can't hear you";
+                    audio2.connecttospeech(askquestion.c_str(), "zh");
+                }
+                else if (askquestion.substring(0, 9) == "唱歌了" or askquestion.substring(0, 9) == "唱歌啦")
+                {
+
+                    if (askquestion.substring(0, 12) == "唱歌了，" or askquestion.substring(0, 12) == "唱歌啦，")
+                    { // 自建音乐服务器，按照文件名查找对应歌曲
+                        String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(12, askquestion.length() - 3) + ".mp3";
+                        Serial.println(audioStreamURL.c_str());
+                        audio2.connecttohost(audioStreamURL.c_str());
+                    }
+                    else if (askquestion.substring(9) == "。")
+                    {
+                        askquestion = "好啊, 你想听什么歌？";
+                        mainStatus = 1;
+                        audio2.connecttospeech(askquestion.c_str(), "zh");
+                    }
+                    else
+                    {
+                        String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(9, askquestion.length() - 3) + ".mp3";
+                        Serial.println(audioStreamURL.c_str());
+                        audio2.connecttohost(audioStreamURL.c_str());
+                    }
+                }
+                else if (mainStatus == 1)
+                {
+                    askquestion.trim();
+                    if (askquestion.endsWith("。"))
+                    {
+                        askquestion = askquestion.substring(0, askquestion.length() - 3);
+                    }
+                    else if (askquestion.endsWith(".") or askquestion.endsWith("?"))
+                    {
+                        askquestion = askquestion.substring(0, askquestion.length() - 1);
+                    }
+                    String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion + ".mp3";
+                    Serial.println(audioStreamURL.c_str());
+                    audio2.connecttohost(audioStreamURL.c_str());
+                    mainStatus = 0;
                 }
                 else
                 {
-                    // 直接播放返回的语音
-                    audio2.connecttospeech(askquestion.c_str(), "zh");
+                    getText("user", askquestion);
+                    Serial.print("text:");
+                    Serial.println(text);
+                    Answer = "";
+                    lastsetence = false;
+                    isReady = true;
+                    ConnServer();
                 }
             }
         }
@@ -372,11 +415,12 @@ void ConnServer()
 
 void ConnServer1()
 {
+    // Serial.println("url1:" + url1);
     webSocketClient1.onMessage(onMessageCallback1);
     webSocketClient1.onEvent(onEventsCallback1);
     // Connect to WebSocket
     Serial.println("Begin connect to server1......");
-    if (webSocketClient1.connect(websockets_server1))
+    if (webSocketClient1.connect(url1.c_str()))
     {
         Serial.println("Connected to server1!");
     }
@@ -567,7 +611,7 @@ void setup()
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
-    url1 = websockets_server1; // 设置新的 WebSocket 服务器 URL
+    url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
     urlTime = millis();
 
     ///////////////////////////////////
@@ -575,9 +619,33 @@ void setup()
 
 void loop()
 {
+
     webSocketClient.poll();
     webSocketClient1.poll();
-    // ... 其他代码 ...
+    // delay(10);
+    if (startPlay)
+    {
+        voicePlay();
+    }
+
+    audio2.loop();
+
+    if (audio2.isplaying == 1)
+    {
+        digitalWrite(led3, HIGH);
+    }
+    else
+    {
+        digitalWrite(led3, LOW);
+        if ((urlTime + 240000 < millis()) && (audio2.isplaying == 0))
+        {
+            urlTime = millis();
+            getTimeFromServer();
+            url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
+            url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
+        }
+    }
+
     if (digitalRead(key) == 0)
     {
         audio2.isplaying = 0;
@@ -587,12 +655,28 @@ void loop()
         Serial.printf("Start recognition\r\n\r\n");
 
         adc_start_flag = 1;
+        // Serial.println(esp_get_free_heap_size());
 
+        if (urlTime + 240000 < millis()) // 超过4分钟，重新做一次鉴权
+        {
+            urlTime = millis();
+            getTimeFromServer();
+            url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
+            url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
+        }
         askquestion = "";
+        // audio2.connecttospeech(askquestion.c_str(), "zh");
         ConnServer1();
+        // ConnServer();
+        // delay(6000);
+        // audio1.Record();
         adc_complete_flag = 0;
+
+        // Serial.println(text);
+        // checkLen(text);
     }
 }
+
 void getText(String role, String content)
 {
     checkLen(text);
