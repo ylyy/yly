@@ -69,7 +69,7 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.5/chat";
-const char *websockets_server1 = "ws://ws-api.xfyun.cn/v2/iat";
+const char *websockets_server1 = "ws://120.76.98.140/wss";
 using namespace websockets;
 
 WebsocketsClient webSocketClient;
@@ -333,11 +333,13 @@ void onEventsCallback1(WebsocketsEvent event, String data)
                 data["audio"] = base64::encode((byte *)audio1.wavData[0], 1280);
                 data["encoding"] = "raw";
                 j++;
-
-                String jsonString;
+                //jsonString发送{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}
+                String jsonString="{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}";
                 serializeJson(doc, jsonString);
-
+                Serial.println("send_2:");
                 webSocketClient1.send(jsonString);
+                Serial.println("send_2 end");
+                Serial.println(jsonString);
                 digitalWrite(led2, LOW);
                 delay(40);
                 break;
@@ -362,8 +364,10 @@ void onEventsCallback1(WebsocketsEvent event, String data)
 
                 String jsonString;
                 serializeJson(doc, jsonString);
-
+                Serial.println("send_0:");
+                Serial.println(jsonString);
                 webSocketClient1.send(jsonString);
+                Serial.println("send_0 end");
                 firstframe = 0;
                 delay(40);
             }
@@ -376,8 +380,10 @@ void onEventsCallback1(WebsocketsEvent event, String data)
 
                 String jsonString;
                 serializeJson(doc, jsonString);
-
+                Serial.println("send_1:");
+                Serial.println(jsonString);
                 webSocketClient1.send(jsonString);
+                Serial.println("send_1 end");
                 delay(40);
             }
         }
@@ -416,10 +422,10 @@ void ConnServer()
 void ConnServer1()
 {
     // Serial.println("url1:" + url1);
-    webSocketClient1.onMessage(onMessageCallback1);
+    webSocketClient1.onMessage(onMessageCallback);
     webSocketClient1.onEvent(onEventsCallback1);
     // Connect to WebSocket
-    Serial.println("Begin connect to server1......");
+    Serial.println("Begin connect to server1...... url1:" + url1);
     if (webSocketClient1.connect(url1.c_str()))
     {
         Serial.println("Connected to server1!");
@@ -610,8 +616,9 @@ void setup()
     audio2.setVolume(50);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
-    url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
+    url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+    //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+    url1 = "ws://120.76.98.140/wss";
     urlTime = millis();
 
     ///////////////////////////////////
@@ -620,7 +627,7 @@ void setup()
 void loop()
 {
 
-    webSocketClient.poll();
+    //webSocketClient.poll();
     webSocketClient1.poll();
     // delay(10);
     if (startPlay)
@@ -641,8 +648,9 @@ void loop()
         {
             urlTime = millis();
             getTimeFromServer();
-            url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
-            url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
+            url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+            //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+            url1 = "ws://120.76.98.140/wss";
         }
     }
 
@@ -661,8 +669,9 @@ void loop()
         {
             urlTime = millis();
             getTimeFromServer();
-            url = getUrl("ws://spark-api.xf-yun.com/v3.5/chat", "spark-api.xf-yun.com", "/v3.5/chat", Date);
-            url1 = getUrl("ws://ws-api.xfyun.cn/v2/iat", "ws-api.xfyun.cn", "/v2/iat", Date);
+            url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+            //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
+            url1 = "ws://120.76.98.140/wss";
         }
         askquestion = "";
         // audio2.connecttospeech(askquestion.c_str(), "zh");
