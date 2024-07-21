@@ -69,7 +69,7 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.5/chat";
-const char *websockets_server1 = "ws://120.76.98.140/wss";
+const char *websockets_server1 = "ws://192.168.42.174:8765";
 using namespace websockets;
 
 WebsocketsClient webSocketClient;
@@ -616,9 +616,9 @@ void setup()
     audio2.setVolume(50);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-    //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-    url1 = "ws://120.76.98.140/wss";
+    url = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+    //url1 = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+    url1 = "ws://192.168.42.174:8765";
     urlTime = millis();
 
     ///////////////////////////////////
@@ -648,9 +648,9 @@ void loop()
         {
             urlTime = millis();
             getTimeFromServer();
-            url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-            //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-            url1 = "ws://120.76.98.140/wss";
+            url = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+            //url1 = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+            url1 = "ws://192.168.42.174:8765";
         }
     }
 
@@ -669,9 +669,9 @@ void loop()
         {
             urlTime = millis();
             getTimeFromServer();
-            url = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-            //url1 = getUrl("ws://120.76.98.140/wss", "120.76.98.140", "/wss", Date);
-            url1 = "ws://120.76.98.140/wss";
+            url = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+            //url1 = getUrl("ws://192.168.42.174:8765", "192.168.42.174", "/wss", Date);
+            url1 = "ws://192.168.42.174:8765";
         }
         askquestion = "";
         // audio2.connecttospeech(askquestion.c_str(), "zh");
