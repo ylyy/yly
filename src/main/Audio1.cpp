@@ -85,7 +85,7 @@ void Audio1::Record()
 {
 
   i2s->Read(i2sBuffer, i2sBufferSize);
-  for (int i = 0; i < i2sBufferSize / 8; ++i)
+  for (int i = 0; i < i2sBufferSize / 4; ++i)
   {
     wavData[0][2 * i] = i2sBuffer[8 * i + 2];
     wavData[0][2 * i + 1] = i2sBuffer[8 * i + 3];
