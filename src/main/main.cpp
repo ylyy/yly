@@ -68,7 +68,7 @@ String Answer = "";
 
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
-const char *websockets_server = "ws://spark-api.xf-yun.com/v3.5/chat";
+const char *websockets_server = "ws://spark-api.xf-yun.com/v3.1/chat";
 const char *websockets_server1 = "ws://192.168.42.174:8765";
 using namespace websockets;
 
@@ -96,69 +96,19 @@ void onMessageCallback(WebsocketsMessage message)
             receiveFrame++;
             Serial.print("receiveFrame:");
             Serial.println(receiveFrame);
-            JsonObject choices = jsonDocument["payload"]["choices"];
-            int status = choices["status"];
-            const char *content = choices["text"][0]["content"];
-            Serial.println(content);
-            Answer += content;
-            String answer = "";
-            if (Answer.length() >= 120 && (audio2.isplaying == 0))
+            Serial.println(message.data());
+            //{"code": 0, "data": {"status": 2, "result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"}}
+            String result = jsonDocument["data"]["result"];
+            if (result.length() > 0 && (audio2.isplaying == 0))
             {
-                String subAnswer = Answer.substring(0, 120);
-                Serial.print("subAnswer:");
-                Serial.println(subAnswer);
-                int lastPeriodIndex = subAnswer.lastIndexOf("。");
-
-                if (lastPeriodIndex != -1)
-                {
-                    answer = Answer.substring(0, lastPeriodIndex + 1);
-                    Serial.print("answer: ");
-                    Serial.println(answer);
-                    Answer = Answer.substring(lastPeriodIndex + 2);
-                    Serial.print("Answer: ");
-                    Serial.println(Answer);
-                    audio2.connecttospeech(answer.c_str(), "zh");
-                }
-                else
-                {
-                    const char *chinesePunctuation = "？，：；,.";
-
-                    int lastChineseSentenceIndex = -1;
-
-                    for (int i = 0; i < Answer.length(); ++i)
-                    {
-                        char currentChar = Answer.charAt(i);
-
-                        if (strchr(chinesePunctuation, currentChar) != NULL)
-                        {
-                            lastChineseSentenceIndex = i;
-                        }
-                    }
-                    if (lastChineseSentenceIndex != -1)
-                    {
-                        answer = Answer.substring(0, lastChineseSentenceIndex + 1);
-                        audio2.connecttospeech(answer.c_str(), "zh");
-                        Answer = Answer.substring(lastChineseSentenceIndex + 2);
-                    }
-                    else
-                    {
-                        answer = Answer.substring(0, 120);
-                        audio2.connecttospeech(answer.c_str(), "zh");
-                        Answer = Answer.substring(120 + 1);
-                    }
-                }
+                //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
+                //result转换为仅获取最后一个/后的字符串
+                String audioStreamURL = "http://192.168.42.174:8000/" + result.substring(result.lastIndexOf("/") + 1);
+                Serial.println(audioStreamURL);
+                audio2.connecttohost(audioStreamURL.c_str());
                 startPlay = true;
             }
-
-            if (status == 2)
-            {
-                getText("assistant", Answer);
-                if (Answer.length() <= 80 && (audio2.isplaying == 0))
-                {
-                    // getText("assistant", Answer);
-                    audio2.connecttospeech(Answer.c_str(), "zh");
-                }
-            }
+            getText("assistant", Answer);
         }
     }
 }
@@ -330,11 +280,11 @@ void onEventsCallback1(WebsocketsEvent event, String data)
             {
                 data["status"] = 2;
                 data["format"] = "audio/L16;rate=8000";
-                data["audio"] = base64::encode((byte *)audio1.wavData[0], 1280);
+                data["audio"] = "";
                 data["encoding"] = "raw";
                 j++;
                 //jsonString发送{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}
-                String jsonString="{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}";
+                String jsonString;
                 serializeJson(doc, jsonString);
                 Serial.println("send_2:");
                 webSocketClient1.send(jsonString);
@@ -551,7 +501,7 @@ String getUrl(String Spark_url, String host, String path, String Date)
     String signature_origin = "host: " + host + "\n";
     signature_origin += "date: " + Date + "\n";
     signature_origin += "GET " + path + " HTTP/1.1";
-    // signature_origin="host: spark-api.xf-yun.com\ndate: Mon, 04 Mar 2024 19:23:20 GMT\nGET /v3.5/chat HTTP/1.1";
+    // signature_origin="host: spark-api.xf-yun.com\ndate: Mon, 04 Mar 2024 19:23:20 GMT\nGET /v3.1/chat HTTP/1.1";
 
     // hmac-sha256 加密
     unsigned char hmac[32];

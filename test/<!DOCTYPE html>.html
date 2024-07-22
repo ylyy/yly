@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Audio Chat</title>
+</head>
+<body>
+    <h1>WebSocket Audio Chat</h1>
+    <button onclick="startRecording()">Start Recording</button>
+    <button onclick="stopRecording()">Stop Recording</button>
+    <audio id="audioPlayer" controls></audio>
+    <script>
+        let ws;
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let audioSource;
+
+        function startRecording() {
+            audioChunks = [];
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    audioContext = new AudioContext();
+                    audioSource = audioContext.createMediaStreamSource(stream);
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.ondataavailable = event => {
+                        audioChunks.push(event.data);
+                    };
+                    mediaRecorder.start();
+                });
+            connectWebSocket();
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            audioContext.close();
+            sendAudioChunks();
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket('ws://192.168.181.174:8765');
+            ws.onopen = () => console.log('WebSocket connection established');
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.data.status === 2) {
+                    playAudio(data.data.audio);
+                }
+            };
+        }
+
+        function sendAudioChunks() {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const audioData = reader.result;
+                ws.send(JSON.stringify({
+                    data: {
+                        status: 0,
+                        audio: audioData
+                    }
+                }));
+                audioChunks.forEach(chunk => {
+                    reader.readAsDataURL(chunk);
+                    reader.onload = () => {
+                        ws.send(JSON.stringify({
+                            data: {
+                                status: 1,
+                                audio: reader.result.split(',')[1]
+                            }
+                        }));
+                    };
+                });
+                ws.send(JSON.stringify({
+                    data: {
+                        status: 2,
+                        audio: ''
+                    }
+                }));
+            };
+            reader.readAsDataURL(audioChunks[0]);
+        }
+
+        function playAudio(base64Audio) {
+            const audioPlayer = document.getElementById('audioPlayer');
+            audioPlayer.src = `data:audio/wav;base64,${base64Audio}`;
+            audioPlayer.play();
+        }
+    </script>
+</body>
+</html>
