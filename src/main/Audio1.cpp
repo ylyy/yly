@@ -59,7 +59,7 @@ void Audio1::CreateWavHeader(byte *header, int waveDataSize)
   header[21] = 0x00;
   header[22] = 0x01; // monoral
   header[23] = 0x00;
-  header[24] = 0x80; // sampling rate 16000
+  header[24] = 0x80; // sampling rate 8000
   header[25] = 0x3E;
   header[26] = 0x00;
   header[27] = 0x00;

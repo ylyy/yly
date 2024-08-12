@@ -69,7 +69,9 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.1/chat";
-const char *websockets_server1 = "ws://192.168.136.174:8765";
+// 修改 websockets_server1 的定义方式
+char websockets_server1[100]; // 先声明为 char 数组
+// 使用 sprintf 格式化字符串
 using namespace websockets;
 
 WebsocketsClient webSocketClient;
@@ -103,7 +105,7 @@ void onMessageCallback(WebsocketsMessage message)
             {
                 //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
                 //result转换为仅获取最后一个/后的字符串
-                String audioStreamURL = "http://192.168.136.174:8000/" + result.substring(result.lastIndexOf("/") + 1);
+                String audioStreamURL = "http://localhost:8000/" + result.substring(result.lastIndexOf("/") + 1);
                 Serial.println(audioStreamURL);
                 audio2.connecttohost(audioStreamURL.c_str());
                 startPlay = true;
@@ -566,9 +568,13 @@ void setup()
     audio2.setVolume(50);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-    //url1 = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-    url1 = "ws://192.168.136.174:8765";
+    url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
+    //url1 = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
+    // ip最后一个.后面的字符替换为174
+    String ip = WiFi.localIP().toString();
+    ip.replace(ip.substring(ip.lastIndexOf(".") + 1), "174");
+    url1 = "ws://" + ip + ":8765";
+    Serial.println(url1);
     urlTime = millis();
 
     ///////////////////////////////////
@@ -597,10 +603,6 @@ void loop()
         if ((urlTime + 240000 < millis()) && (audio2.isplaying == 0))
         {
             urlTime = millis();
-            getTimeFromServer();
-            url = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-            //url1 = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-            url1 = "ws://192.168.136.174:8765";
         }
     }
 
@@ -619,9 +621,7 @@ void loop()
         {
             urlTime = millis();
             getTimeFromServer();
-            url = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-            //url1 = getUrl("ws://192.168.136.174:8765", "192.168.136.174", "/wss", Date);
-            url1 = "ws://192.168.136.174:8765";
+            url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
         }
         askquestion = "";
         // audio2.connecttospeech(askquestion.c_str(), "zh");
