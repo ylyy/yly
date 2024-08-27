@@ -7441,4 +7441,87 @@ uint8_t Audio2::determineOggCodec(uint8_t *data, uint16_t len)
     }
     return CODEC_NONE;
 }
+
+// 添加新的实现
+
+bool Audio2::connecttoWebSocket(const char* url) {
+    // 实现WebSocket连接逻辑
+    // ...
+    wsBuffer = new CircularBuffer<uint8_t>(32 * 1024);
+    isFirstFrame = true;
+    headerProcessed = false;
+    return true; // 如果连接成功
+}
+
+void Audio2::handleWebSocketMessage(const char* message) {
+DynamicJsonDocument doc(1024);
+    deserializeJson(doc, message);
+
+    int status = doc["data"]["status"];
+    String base64Data = doc["data"]["result"]["ws"][0]["cw"][0]["w"];
+
+    // 解码Base64数据
+    size_t decodedLength;
+    uint8_t* decodedData = base64_decode(base64Data.c_str(), base64Data.length(), &decodedLength);
+
+    if (decodedData) {
+        if (status == 0 && isFirstFrame) {
+            // 第一帧，处理WAV头部
+            processHeader(decodedData, decodedLength);
+            isFirstFrame = false;
+        } else {
+            // 中间帧或结束帧，直接处理音频数据
+            handleAudioData(decodedData, decodedLength);
+        }
+        free(decodedData);
+    }
+
+    if (status == 2) {
+        // 结束帧，重置状态
+        isFirstFrame = true;
+        headerProcessed = false;
+    }
+}
+bool Audio2::processWAVHeader(uint8_t* data,size_t length)
+{
+    if (length < 44) return false;
+    return (read_WAV_Header(data, length) == 0);
+}
+
+void Audio2::processHeader(uint8_t* data, size_t length) {
+    if (length >= 44) {
+        if (processWAVHeader(data, 44)) {
+            headerProcessed = true;
+            handleAudioData(data + 44, length - 44);
+        }
+    }
+}
+void Audio2::handleAudioData(uint8_t* data, size_t length) {
+    wsBuffer->write(data, length);
+    playAudio();
+}
+
+void Audio2::playAudio() {
+    AudioBuffer* inBuff = getInBuff();
+    size_t maxBlockSize = inBuff->getMaxBlockSize();
+
+    while (wsBuffer->available() >= maxBlockSize) {
+        uint8_t* data = (uint8_t*)malloc(maxBlockSize);
+        if (!data) {
+            log_e("内存分配失败");
+            return;
+        }
+        wsBuffer->read(data, maxBlockSize);
+        
+        // 使用 AudioBuffer 实际存在的方法
+        inBuff->bytesWritten(maxBlockSize);
+        
+        free(data);
+
+        while (inBuff->bufferFilled() >= maxBlockSize) {
+            playChunk();
+        }
+    }
+}
+
 //----------------------------------------------------------------------------------------------------------------------

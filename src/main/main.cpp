@@ -16,7 +16,7 @@ using namespace websockets;
 #define led1 19
 const char *wifiData[][2] = {
     {"IQOO", "88888888"}, // 替换为自己常用的wifi名和密码
-    // {"222", "12345678"},
+     {"913", "66666913"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
 
@@ -41,7 +41,7 @@ uint8_t adc_start_flag = 0;
 uint8_t adc_complete_flag = 0;
 
 Audio1 audio1;
-Audio2 audio2(false, 3, I2S_NUM_1);
+Audio2 audioWS(false, 3, I2S_NUM_1);
 
 #define I2S_DOUT 27 // DIN
 #define I2S_BCLK 26 // BCLK
@@ -101,13 +101,9 @@ void onMessageCallback(WebsocketsMessage message)
             Serial.println(message.data());
             //{"code": 0, "data": {"status": 2, "result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"}}
             String result = jsonDocument["data"]["result"];
-            if (result.length() > 0 && (audio2.isplaying == 0))
+            if (result.length() > 0 && (audioWS.isplaying == 0))
             {
-                //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
-                //result转换为仅获取最后一个/后的字符串
-                String audioStreamURL = "http://localhost:8000/" + result.substring(result.lastIndexOf("/") + 1);
-                Serial.println(audioStreamURL);
-                audio2.connecttohost(audioStreamURL.c_str());
+                audioWS.handleWebSocketMessage(message.c_str());
                 startPlay = true;
             }
             getText("assistant", Answer);
@@ -176,7 +172,7 @@ void onMessageCallback1(WebsocketsMessage message)
                 if (askquestion == "")
                 {
                     askquestion = "sorry, i can't hear you";
-                    audio2.connecttospeech(askquestion.c_str(), "zh");
+                    //audioWS.connecttospeech(askquestion.c_str(), "zh");
                 }
                 else if (askquestion.substring(0, 9) == "唱歌了" or askquestion.substring(0, 9) == "唱歌啦")
                 {
@@ -185,19 +181,19 @@ void onMessageCallback1(WebsocketsMessage message)
                     { // 自建音乐服务器，按照文件名查找对应歌曲
                         String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(12, askquestion.length() - 3) + ".mp3";
                         Serial.println(audioStreamURL.c_str());
-                        audio2.connecttohost(audioStreamURL.c_str());
+                        //audioWS.connecttohost(audioStreamURL.c_str());
                     }
                     else if (askquestion.substring(9) == "。")
                     {
                         askquestion = "好啊, 你想听什么歌？";
                         mainStatus = 1;
-                        audio2.connecttospeech(askquestion.c_str(), "zh");
+                        audioWS.connecttospeech(askquestion.c_str(), "zh");
                     }
                     else
                     {
                         String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(9, askquestion.length() - 3) + ".mp3";
                         Serial.println(audioStreamURL.c_str());
-                        audio2.connecttohost(audioStreamURL.c_str());
+                        //audioWS.connecttohost(audioStreamURL.c_str());
                     }
                 }
                 else if (mainStatus == 1)
@@ -213,7 +209,7 @@ void onMessageCallback1(WebsocketsMessage message)
                     }
                     String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion + ".mp3";
                     Serial.println(audioStreamURL.c_str());
-                    audio2.connecttohost(audioStreamURL.c_str());
+                    //audioWS.connecttohost(audioStreamURL.c_str());
                     mainStatus = 0;
                 }
                 else
@@ -390,7 +386,7 @@ void ConnServer1()
 
 void voicePlay()
 {
-    if ((audio2.isplaying == 0) && Answer != "")
+    if ((audioWS.isplaying == 0) && Answer != "")
     {
         // String subAnswer = "";
         // String answer = "";
@@ -425,7 +421,7 @@ void voicePlay()
             Serial.print("answer: ");
             Serial.println(answer);
             Answer = Answer.substring(secondPeriodIndex + 2);
-            audio2.connecttospeech(answer.c_str(), "zh");
+            audioWS.connecttospeech(answer.c_str(), "zh");
         }
         else
         {
@@ -446,7 +442,7 @@ void voicePlay()
             if (lastChineseSentenceIndex != -1)
             {
                 String answer = Answer.substring(0, lastChineseSentenceIndex + 1);
-                audio2.connecttospeech(answer.c_str(), "zh");
+                audioWS.connecttospeech(answer.c_str(), "zh");
                 Answer = Answer.substring(lastChineseSentenceIndex + 2);
             }
         }
@@ -531,25 +527,12 @@ String getUrl(String Spark_url, String host, String path, String Date)
     Serial.println(url);
     return url;
 }
-
-void getTimeFromServer()
-{
-    String timeurl = "https://www.baidu.com";
-    HTTPClient http;
-    http.begin(timeurl);
-    const char *headerKeys[] = {"Date"};
-    http.collectHeaders(headerKeys, sizeof(headerKeys) / sizeof(headerKeys[0]));
-    int httpCode = http.GET();
-    Date = http.header("Date");
-    Serial.println(Date);
-    http.end();
-    // delay(50); // 可以根据实际情况调整延时时间
-}
-
 void setup()
 {
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     Serial.begin(115200);
+     Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+
     // pinMode(ADC,ANALOG);
     pinMode(key, INPUT_PULLUP);
     pinMode(34, INPUT_PULLUP);
@@ -562,10 +545,54 @@ void setup()
     int numNetworks = sizeof(wifiData) / sizeof(wifiData[0]);
     wifiConnect(wifiData, numNetworks);
 
-    getTimeFromServer();
+    // WiFi.mode(WIFI_AP_STA);   
+    // if(WiFi.beginSmartConfig())
+    // {
+    //     Serial.println("beginSmartConfig success");
+    // }
+    // else
+    // {
+    //     Serial.println("beginSmartConfig fail");
+    // }
+    // while (!WiFi.smartConfigDone()) {  // If the smart network is not completed.
+    //                                    // 若智能配网没有完成
+    //     delay(500);
+    //     Serial.println("smartConfig not done");
+    // }
+    
+    // 配网成功后，立即请求接口
+    String bssid = WiFi.BSSIDstr(); // 获取 BSSID
+    String uuid = String(ESP.getEfuseMac()); // 获取 UUID
+    HTTPClient http;
+    http.begin("http://120.76.98.140/app/api/v1/toy/save-uuid");
+    
+    String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    String form = "--" + boundary + "\r\n";
+    form += "Content-Disposition: form-data; name=\"wifi_bssid\"\r\n\r\n" + bssid + "\r\n";
+    form += "--" + boundary + "\r\n";
+    form += "Content-Disposition: form-data; name=\"toy_uuid\"\r\n\r\n" + uuid + "\r\n";
+    form += "--" + boundary + "--\r\n";
+    Serial.println(form);
+    
 
-    audio2.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audio2.setVolume(50);
+    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+    
+    int httpCode = http.POST(form);
+    
+    if (httpCode > 0) {
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = http.getString();
+            Serial.println("Response: " + payload);
+        } else {
+            Serial.printf("Error: %d\n", httpCode);
+        }
+    } else {
+        Serial.printf("HTTP请求失败，错误原因: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+       Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+    audioWS.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+    audioWS.setVolume(50);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
@@ -591,16 +618,16 @@ void loop()
         voicePlay();
     }
 
-    audio2.loop();
+    audioWS.loop();
 
-    if (audio2.isplaying == 1)
+    if (audioWS.isplaying == 1)
     {
         digitalWrite(led3, HIGH);
     }
     else
     {
         digitalWrite(led3, LOW);
-        if ((urlTime + 240000 < millis()) && (audio2.isplaying == 0))
+        if ((urlTime + 240000 < millis()) && (audioWS.isplaying == 0))
         {
             urlTime = millis();
         }
@@ -608,7 +635,7 @@ void loop()
 
     if (digitalRead(key) == 0)
     {
-        audio2.isplaying = 0;
+        audioWS.isplaying = 0;
         startPlay = false;
         isReady = false;
         Answer = "";
@@ -617,14 +644,8 @@ void loop()
         adc_start_flag = 1;
         // Serial.println(esp_get_free_heap_size());
 
-        if (urlTime + 240000 < millis()) // 超过4分钟，重新做一次鉴权
-        {
-            urlTime = millis();
-            getTimeFromServer();
-            url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-        }
         askquestion = "";
-        // audio2.connecttospeech(askquestion.c_str(), "zh");
+        // audioWS.connecttospeech(askquestion.c_str(), "zh");
         ConnServer1();
         // ConnServer();
         // delay(6000);

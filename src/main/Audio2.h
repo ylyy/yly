@@ -44,6 +44,81 @@ extern __attribute__((weak)) void audio_eof_stream(const char *);               
 extern __attribute__((weak)) void audio_process_extern(int16_t *buff, uint16_t len, bool *continueI2S); // record audiodata or send via BT
 extern __attribute__((weak)) void audio_process_i2s(uint32_t *sample, bool *continueI2S);               // record audiodata or send via BT
 
+
+#include <ArduinoJson.h>
+#include <vector>
+
+static uint8_t* base64_decode(const char* input, size_t inputLen, size_t* outputLen) {
+    const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    *outputLen = inputLen * 3 / 4;
+    uint8_t* decoded = (uint8_t*)malloc(*outputLen);
+    if (!decoded) return nullptr;
+
+    size_t i = 0, j = 0;
+    int val = 0, count = 0;
+
+    for (i = 0; i < inputLen; ++i) {
+        char c = input[i];
+        if (c == '=') break;
+        const char* p = strchr(base64_chars, c);
+        if (p) {
+            val = (val << 6) | (p - base64_chars);
+            if (++count == 4) {
+                decoded[j++] = (val >> 16) & 255;
+                decoded[j++] = (val >> 8) & 255;
+                decoded[j++] = val & 255;
+                val = count = 0;
+            }
+        }
+    }
+
+    if (count) {
+        if (count == 1) {
+            free(decoded);
+            return nullptr;
+        }
+        val <<= 6 * (4 - count);
+        decoded[j++] = (val >> 16) & 255;
+        if (count > 2) decoded[j++] = (val >> 8) & 255;
+    }
+
+    *outputLen = j;
+    return decoded;
+}
+
+// 在文件顶部添加以下简单的 CircularBuffer 实现
+template<typename T>
+class CircularBuffer {
+private:
+    std::vector<T> buffer;
+    size_t head = 0, tail = 0, count = 0;
+
+public:
+    CircularBuffer(size_t size) : buffer(size) {}
+
+    void write(const T* data, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            buffer[tail] = data[i];
+            tail = (tail + 1) % buffer.size();
+            if (count < buffer.size()) count++;
+            else head = (head + 1) % buffer.size();
+        }
+    }
+
+    size_t read(T* data, size_t len) {
+        size_t read = std::min(len, count);
+        for (size_t i = 0; i < read; ++i) {
+            data[i] = buffer[head];
+            head = (head + 1) % buffer.size();
+        }
+        count -= read;
+        return read;
+    }
+
+    size_t available() const { return count; }
+};
+// ... 其他现有代码 ...
+
 //----------------------------------------------------------------------------------------------------------------------
 
 class AudioBuffer
@@ -93,6 +168,9 @@ public:
     uint32_t getReadPos();                 // read position relative to the beginning
     void resetBuffer();                    // restore defaults
     bool havePSRAM() { return m_f_psram; };
+
+    bool connecttoWebSocket(const char* url);
+    void handleWebSocketMessage(const char* message);
 
 protected:
     size_t m_buffSizePSRAM = UINT16_MAX * 10; // most webstreams limit the advance to 100...300Kbytes
@@ -167,7 +245,21 @@ public:
     const char *getCodecname() { return codecname[m_codec]; }
     void unicode2utf8(char *buff, uint32_t len);
     uint8_t isplaying = 0;
+public:
+    // 添加新的公共方法
+    bool connecttoWebSocket(const char* url);
+    void handleWebSocketMessage(const char* message);
+    void processHeader(uint8_t* data, size_t length);
+    void handleAudioData(uint8_t* data, size_t length);
+    void playAudio();
+    bool processWAVHeader(uint8_t* data,size_t length);
+    AudioBuffer* getInBuff() { return &InBuff; }
 
+private:
+    // 添加新的私有成员
+    CircularBuffer<uint8_t>* wsBuffer;
+    bool isFirstFrame;
+    bool headerProcessed;
 private:
 #ifndef ESP_ARDUINO_VERSION_VAL
 #define ESP_ARDUINO_VERSION_MAJOR 0
@@ -601,7 +693,7 @@ private:
     uint8_t m_curve = 0;          // volume characteristic
     uint8_t m_bitsPerSample = 16; // bitsPerSample
     uint8_t m_channels = 2;
-    uint8_t m_i2s_num = I2S_NUM_0;          // I2S_NUM_0 or I2S_NUM_1
+    uint8_t m_i2s_num = I2S_NUM_1;          // I2S_NUM_0 or I2S_NUM_1
     uint8_t m_playlistFormat = 0;           // M3U, PLS, ASX
     uint8_t m_codec = CODEC_NONE;           //
     uint8_t m_expectedCodec = CODEC_NONE;   // set in connecttohost (e.g. http://url.mp3 -> CODEC_MP3)
