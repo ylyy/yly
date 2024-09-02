@@ -1,22 +1,22 @@
+#include <M5Atom.h>
 #include <Arduino.h>
 #include "base64.h"
 #include "WiFi.h"
+#include "Audio2.h"
 #include <WiFiClientSecure.h>
 #include "HTTPClient.h"
-#include "Audio1.h"
-#include "Audio2.h"
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
-using namespace websockets;
+#include <driver/i2s.h>
+#include "AtomSPK.h"
 
+using namespace websockets;
 #define key 0
 #define ADC 32
-#define led3 2
-#define led2 18
 #define led1 19
 const char *wifiData[][2] = {
     {"IQOO", "88888888"}, // 替换为自己常用的wifi名和密码
-     {"913", "66666913"},
+    {"913", "88888913"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
 
@@ -32,36 +32,110 @@ unsigned long urlTime = 0;
 unsigned long pushTime = 0;
 int mainStatus = 0;
 int receiveFrame = 0;
-int noise = 50;
+int noise = 180;
+int isplaying = 0;
 HTTPClient https;
+ATOMSPK _AtomSPK;
 
 hw_timer_t *timer = NULL;
 
 uint8_t adc_start_flag = 0;
 uint8_t adc_complete_flag = 0;
 
-Audio1 audio1;
-Audio2 audioWS(false, 3, I2S_NUM_1);
+// Audio1 audio1;
+Audio2 audio2(false, 3, I2S_NUM_0);
 
-#define I2S_DOUT 27 // DIN
-#define I2S_BCLK 26 // BCLK
-#define I2S_LRC 25  // LRC
+#include "AudioFileSourceICYStream.h"
+#include "AudioFileSourceBuffer.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioOutputI2S.h"
+
+const char *URL="http://192.168.42.174:8000/4427989152-out.mp3";
+
+AudioGeneratorMP3 *mp3;
+AudioFileSourceICYStream *file;
+AudioFileSourceBuffer *buff;
+AudioOutputI2S *out;
+
+void MDCallback(void *cbData, const char *type, bool isUnicode, const char *string)
+{
+  const char *ptr = reinterpret_cast<const char *>(cbData);
+  (void) isUnicode; // Punt this ball for now
+  // Note that the type and string may be in PROGMEM, so copy them to RAM for printf
+  char s1[32], s2[64];
+  strncpy_P(s1, type, sizeof(s1));
+  s1[sizeof(s1)-1]=0;
+  strncpy_P(s2, string, sizeof(s2));
+  s2[sizeof(s2)-1]=0;
+  Serial.printf("METADATA(%s) '%s' = '%s'\n", ptr, s1, s2);
+  Serial.flush();
+}
+
+// Called when there's a warning or error (like a buffer underflow or decode hiccup)
+void StatusCallback(void *cbData, int code, const char *string)
+{
+  const char *ptr = reinterpret_cast<const char *>(cbData);
+  // Note that the string may be in PROGMEM, so copy it to RAM for printf
+  char s1[64];
+  strncpy_P(s1, string, sizeof(s1));
+  s1[sizeof(s1)-1]=0;
+  Serial.printf("STATUS(%s) '%d' = '%s'\n", ptr, code, s1);
+  Serial.flush();
+}
+// 减小缓冲区大小或使用动态分配
+// uint8_t microphonedata0[1024 * 80];
+uint8_t* microphonedata0 = nullptr;
+
+// 在需要时分配内存
+void allocateMicrophoneBuffer() {
+    if (!microphonedata0) {
+        microphonedata0 = (uint8_t*)malloc(1024 * 80);
+    }
+}
+
+// 在不需要时释放内存
+void freeMicrophoneBuffer() {
+    if (microphonedata0) {
+        free(microphonedata0);
+        microphonedata0 = nullptr;
+    }
+}
+uint8_t
+    DisBuff[2 + 5 * 5 * 3];  // Used to store RGB color values.  用来存储RBG色值
+
+void setBuff(uint8_t Rdata, uint8_t Gdata,
+             uint8_t Bdata) {  // Set the colors of LED, and save the relevant
+                               // data to DisBuff[].  设置RGB灯的颜色
+    DisBuff[0] = 0x05;
+    DisBuff[1] = 0x05;
+    for (int i = 0; i < 25; i++) {
+        DisBuff[2 + i * 3 + 0] = Rdata;
+        DisBuff[2 + i * 3 + 1] = Gdata;
+        DisBuff[2 + i * 3 + 2] = Bdata;
+    }
+}
+size_t byte_read = 0;
+int16_t *buffptr;
+uint32_t data_offset = 0;
+#define DATA_SIZE 1024
+
+String SpakeStr;
+bool Spakeflag = false;
+
+#define I2S_DOUT 22 // DIN
+#define I2S_BCLK 19 // BCLK
+#define I2S_LRC 33  // LRC
 
 void gain_token(void);
-void getText(String role, String content);
-void checkLen(JsonArray textArray);
-int getLength(JsonArray textArray);
 float calculateRMS(uint8_t *buffer, int bufferSize);
-void ConnServer();
 void ConnServer1();
 
-DynamicJsonDocument doc(4000);
+DynamicJsonDocument doc(1000);
 JsonArray text = doc.to<JsonArray>();
 
 String url = "";
 String url1 = "";
 String Date = "";
-DynamicJsonDocument gen_params(const char *appid, const char *domain);
 
 String askquestion = "";
 String Answer = "";
@@ -69,10 +143,68 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.1/chat";
-// 修改 websockets_server1 的定义方式
-char websockets_server1[100]; // 先声明为 char 数组
-// 使用 sprintf 格式化字符串
+const char *websockets_server1 = "ws://192.168.216.174:8765";
 using namespace websockets;
+
+#define SPEAK_I2S_NUMBER I2S_NUM_0
+#define MODE_MIC 0
+#define MODE_SPK 1
+#define CONFIG_I2S_BCK_PIN     19
+#define CONFIG_I2S_LRCK_PIN    33
+#define CONFIG_I2S_DATA_PIN    22
+#define CONFIG_I2S_DATA_IN_PIN 23
+
+bool InitI2SSpeakOrMic(int mode) {
+    esp_err_t err = ESP_OK;
+
+    i2s_driver_uninstall(SPEAK_I2S_NUMBER);
+    i2s_config_t i2s_config = {
+        .mode        = (i2s_mode_t)(I2S_MODE_MASTER),
+        .sample_rate = 16000,
+        .bits_per_sample =
+            I2S_BITS_PER_SAMPLE_16BIT,  // is fixed at 12bit, stereo, MSB
+        .channel_format = I2S_CHANNEL_FMT_ALL_RIGHT,
+#if ESP_IDF_VERSION > ESP_IDF_VERSION_VAL(4, 1, 0)
+        .communication_format =
+            I2S_COMM_FORMAT_STAND_I2S,  // Set the format of the communication.
+#else                                   // 设置通讯格式
+        .communication_format = I2S_COMM_FORMAT_I2S,
+#endif
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count    = 6,
+        .dma_buf_len      = 60,
+    };
+    if (mode == MODE_MIC) {
+        i2s_config.mode =
+            (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM);
+    } else {
+        i2s_config.mode     = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+        i2s_config.use_apll = false;
+        i2s_config.tx_desc_auto_clear = true;
+    }
+
+    Serial.println("Init i2s_driver_install");
+
+    err += i2s_driver_install(SPEAK_I2S_NUMBER, &i2s_config, 0, NULL);
+    i2s_pin_config_t tx_pin_config;
+
+#if (ESP_IDF_VERSION > ESP_IDF_VERSION_VAL(4, 3, 0))
+    tx_pin_config.mck_io_num = I2S_PIN_NO_CHANGE;
+#endif
+    tx_pin_config.bck_io_num   = CONFIG_I2S_BCK_PIN;
+    tx_pin_config.ws_io_num    = CONFIG_I2S_LRCK_PIN;
+    tx_pin_config.data_out_num = CONFIG_I2S_DATA_PIN;
+    tx_pin_config.data_in_num  = CONFIG_I2S_DATA_IN_PIN;
+
+    Serial.println("Init i2s_set_pin");
+    err += i2s_set_pin(SPEAK_I2S_NUMBER, &tx_pin_config);
+    Serial.println("Init i2s_set_clk");
+    err += i2s_set_clk(SPEAK_I2S_NUMBER, 16000, I2S_BITS_PER_SAMPLE_16BIT,
+                       I2S_CHANNEL_MONO);
+
+    return true;
+}
+
 
 WebsocketsClient webSocketClient;
 WebsocketsClient webSocketClient1;
@@ -80,9 +212,9 @@ WebsocketsClient webSocketClient1;
 int loopcount = 0;
 void onMessageCallback(WebsocketsMessage message)
 {
-    StaticJsonDocument<4096> jsonDocument;
+    StaticJsonDocument<1024> jsonDocument;
     DeserializationError error = deserializeJson(jsonDocument, message.data());
-
+    Serial.println(message.data());
     if (!error)
     {
         int code = jsonDocument["header"]["code"];
@@ -98,138 +230,33 @@ void onMessageCallback(WebsocketsMessage message)
             receiveFrame++;
             Serial.print("receiveFrame:");
             Serial.println(receiveFrame);
-            Serial.println(message.data());
-            //{"code": 0, "data": {"status": 2, "result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"}}
+            //获取这个w内容{"code": 0, "data": {"status": 1, "result": {"ws": [{"cw": [{"w": “”
             String result = jsonDocument["data"]["result"];
-            if (result.length() > 0 && (audioWS.isplaying == 0))
+            // allocateMicrophoneBuffer();
+            // 将 result 的数据复制到 microphonedata0
+            // memcpy(microphonedata0, result.c_str(), result.length());
+            // Serial.println((char*)microphonedata0);
+            Serial.println(result.length());
+            if (result.length() > 0 && (isplaying == 0))
             {
-                audioWS.handleWebSocketMessage(message.c_str());
+                //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
+                //result转换为仅获取最后一个/后的字符串
+                String url = "http://192.168.216.174:8000/" + result.substring(result.lastIndexOf('/') + 1);
+                // i2s_driver_uninstall(SPEAK_I2S_NUMBER);
+                InitI2SSpeakOrMic(MODE_SPK);
+                // _AtomSPK.begin();
+                // size_t bytes_written;
+                // while (1) {
+                //     _AtomSPK.playRAW((uint8_t*)result.c_str(), result.length(), true, false);
+                //     delay(10); // 添加适当的延时
+                // }
+                Serial.println(url);                
+                audio2.connecttohost(url.c_str());
+                
                 startPlay = true;
-            }
-            getText("assistant", Answer);
-        }
-    }
-}
-
-void onEventsCallback(WebsocketsEvent event, String data)
-{
-    if (event == WebsocketsEvent::ConnectionOpened)
-    {
-        Serial.println("Send message to server0!");
-        DynamicJsonDocument jsonData = gen_params(appId1, domain1);
-        String jsonString;
-        serializeJson(jsonData, jsonString);
-        Serial.println(jsonString);
-        webSocketClient.send(jsonString);
-    }
-    else if (event == WebsocketsEvent::ConnectionClosed)
-    {
-        Serial.println("Connnection0 Closed");
-    }
-    else if (event == WebsocketsEvent::GotPing)
-    {
-        Serial.println("Got a Ping!");
-    }
-    else if (event == WebsocketsEvent::GotPong)
-    {
-        Serial.println("Got a Pong!");
-    }
-}
-
-void onMessageCallback1(WebsocketsMessage message)
-{
-    StaticJsonDocument<4096> jsonDocument;
-    DeserializationError error = deserializeJson(jsonDocument, message.data());
-
-    if (!error)
-    {
-        int code = jsonDocument["code"];
-        if (code != 0)
-        {
-            Serial.println(code);
-            Serial.println(message.data());
-            webSocketClient1.close();
-        }
-        else
-        {
-            Serial.println("xunfeiyun return message:");
-            Serial.println(message.data());
-            JsonArray ws = jsonDocument["data"]["result"]["ws"].as<JsonArray>();
-
-            for (JsonVariant i : ws)
-            {
-                for (JsonVariant w : i["cw"].as<JsonArray>())
-                {
-                    askquestion += w["w"].as<String>();
-                }
-            }
-            Serial.println(askquestion);
-            int status = jsonDocument["data"]["status"];
-            if (status == 2)
-            {
-                Serial.println("status == 2");
-                webSocketClient1.close();
-                if (askquestion == "")
-                {
-                    askquestion = "sorry, i can't hear you";
-                    //audioWS.connecttospeech(askquestion.c_str(), "zh");
-                }
-                else if (askquestion.substring(0, 9) == "唱歌了" or askquestion.substring(0, 9) == "唱歌啦")
-                {
-
-                    if (askquestion.substring(0, 12) == "唱歌了，" or askquestion.substring(0, 12) == "唱歌啦，")
-                    { // 自建音乐服务器，按照文件名查找对应歌曲
-                        String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(12, askquestion.length() - 3) + ".mp3";
-                        Serial.println(audioStreamURL.c_str());
-                        //audioWS.connecttohost(audioStreamURL.c_str());
-                    }
-                    else if (askquestion.substring(9) == "。")
-                    {
-                        askquestion = "好啊, 你想听什么歌？";
-                        mainStatus = 1;
-                        audioWS.connecttospeech(askquestion.c_str(), "zh");
-                    }
-                    else
-                    {
-                        String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion.substring(9, askquestion.length() - 3) + ".mp3";
-                        Serial.println(audioStreamURL.c_str());
-                        //audioWS.connecttohost(audioStreamURL.c_str());
-                    }
-                }
-                else if (mainStatus == 1)
-                {
-                    askquestion.trim();
-                    if (askquestion.endsWith("。"))
-                    {
-                        askquestion = askquestion.substring(0, askquestion.length() - 3);
-                    }
-                    else if (askquestion.endsWith(".") or askquestion.endsWith("?"))
-                    {
-                        askquestion = askquestion.substring(0, askquestion.length() - 1);
-                    }
-                    String audioStreamURL = "http://192.168.0.1/mp3/" + askquestion + ".mp3";
-                    Serial.println(audioStreamURL.c_str());
-                    //audioWS.connecttohost(audioStreamURL.c_str());
-                    mainStatus = 0;
-                }
-                else
-                {
-                    getText("user", askquestion);
-                    Serial.print("text:");
-                    Serial.println(text);
-                    Answer = "";
-                    lastsetence = false;
-                    isReady = true;
-                    ConnServer();
-                }
+                // freeMicrophoneBuffer();
             }
         }
-    }
-    else
-    {
-        Serial.println("error:");
-        Serial.println(error.c_str());
-        Serial.println(message.data());
     }
 }
 
@@ -237,8 +264,8 @@ void onEventsCallback1(WebsocketsEvent event, String data)
 {
     if (event == WebsocketsEvent::ConnectionOpened)
     {
-        Serial.println("Send message to xunfeiyun");
-        digitalWrite(led2, HIGH);
+        Serial.println("Send message to coze");
+        setBuff(0x40, 0x00, 0x00);
         int silence = 0;
         int firstframe = 1;
         int j = 0;
@@ -249,8 +276,15 @@ void onEventsCallback1(WebsocketsEvent event, String data)
         {
             doc.clear();
             JsonObject data = doc.createNestedObject("data");
-            audio1.Record();
-            float rms = calculateRMS((uint8_t *)audio1.wavData[0], 1280);
+            allocateMicrophoneBuffer();
+            i2s_read(SPEAK_I2S_NUMBER, (char *)(microphonedata0),
+                     DATA_SIZE, &byte_read, (100 / portTICK_RATE_MS));
+            // for (int i = 0; i < audio1.i2sBufferSize / 8; ++i)
+            // {
+            //     audio1.wavData[0][2 * i] = audio1.i2sBuffer[8 * i + 2];
+            //     audio1.wavData[0][2 * i + 1] = audio1.i2sBuffer[8 * i + 3];
+            // }
+            float rms = calculateRMS((uint8_t *)microphonedata0, DATA_SIZE);
             printf("%d %f\n", 0, rms);
             if (rms < noise)
             {
@@ -287,8 +321,8 @@ void onEventsCallback1(WebsocketsEvent event, String data)
                 Serial.println("send_2:");
                 webSocketClient1.send(jsonString);
                 Serial.println("send_2 end");
-                Serial.println(jsonString);
-                digitalWrite(led2, LOW);
+                // Serial.println(jsonString);
+                setBuff(0x00, 0x40, 0x00);
                 delay(40);
                 break;
             }
@@ -296,9 +330,10 @@ void onEventsCallback1(WebsocketsEvent event, String data)
             {
                 data["status"] = 0;
                 data["format"] = "audio/L16;rate=8000";
-                data["audio"] = base64::encode((byte *)audio1.wavData[0], 1280);
+                data["audio"] = base64::encode((byte *)microphonedata0, DATA_SIZE);
                 data["encoding"] = "raw";
                 j++;
+                buff = new AudioFileSourceBuffer(file, 10240);
 
                 JsonObject common = doc.createNestedObject("common");
                 common["app_id"] = appId1;
@@ -318,21 +353,23 @@ void onEventsCallback1(WebsocketsEvent event, String data)
                 Serial.println("send_0 end");
                 firstframe = 0;
                 delay(40);
+                freeMicrophoneBuffer();
             }
             else
             {
                 data["status"] = 1;
                 data["format"] = "audio/L16;rate=8000";
-                data["audio"] = base64::encode((byte *)audio1.wavData[0], 1280);
+                data["audio"] = base64::encode((byte *)microphonedata0, DATA_SIZE);
                 data["encoding"] = "raw";
 
                 String jsonString;
                 serializeJson(doc, jsonString);
                 Serial.println("send_1:");
-                Serial.println(jsonString);
+                // Serial.println(jsonString);
                 webSocketClient1.send(jsonString);
                 Serial.println("send_1 end");
                 delay(40);
+                freeMicrophoneBuffer();
             }
         }
     }
@@ -349,24 +386,6 @@ void onEventsCallback1(WebsocketsEvent event, String data)
         Serial.println("Got a Pong!");
     }
 }
-void ConnServer()
-{
-    Serial.println("url:" + url);
-
-    webSocketClient.onMessage(onMessageCallback);
-    webSocketClient.onEvent(onEventsCallback);
-    // Connect to WebSocket
-    Serial.println("Begin connect to server0......");
-    if (webSocketClient.connect(url.c_str()))
-    {
-        Serial.println("Connected to server0!");
-    }
-    else
-    {
-        Serial.println("Failed to connect to server0!");
-    }
-}
-
 void ConnServer1()
 {
     // Serial.println("url1:" + url1);
@@ -381,76 +400,6 @@ void ConnServer1()
     else
     {
         Serial.println("Failed to connect to server1!");
-    }
-}
-
-void voicePlay()
-{
-    if ((audioWS.isplaying == 0) && Answer != "")
-    {
-        // String subAnswer = "";
-        // String answer = "";
-        // if (Answer.length() >= 100)
-        //     subAnswer = Answer.substring(0, 100);
-        // else
-        // {
-        //     subAnswer = Answer.substring(0);
-        //     lastsetence = true;
-        //     // startPlay = false;
-        // }
-
-        // Serial.print("subAnswer:");
-        // Serial.println(subAnswer);
-        int firstPeriodIndex = Answer.indexOf("。");
-        int secondPeriodIndex = 0;
-
-        if (firstPeriodIndex != -1)
-        {
-            secondPeriodIndex = Answer.indexOf("。", firstPeriodIndex + 1);
-            if (secondPeriodIndex == -1)
-                secondPeriodIndex = firstPeriodIndex;
-        }
-        else
-        {
-            secondPeriodIndex = firstPeriodIndex;
-        }
-
-        if (secondPeriodIndex != -1)
-        {
-            String answer = Answer.substring(0, secondPeriodIndex + 1);
-            Serial.print("answer: ");
-            Serial.println(answer);
-            Answer = Answer.substring(secondPeriodIndex + 2);
-            audioWS.connecttospeech(answer.c_str(), "zh");
-        }
-        else
-        {
-            const char *chinesePunctuation = "？，：；,.";
-
-            int lastChineseSentenceIndex = -1;
-
-            for (int i = 0; i < Answer.length(); ++i)
-            {
-                char currentChar = Answer.charAt(i);
-
-                if (strchr(chinesePunctuation, currentChar) != NULL)
-                {
-                    lastChineseSentenceIndex = i;
-                }
-            }
-
-            if (lastChineseSentenceIndex != -1)
-            {
-                String answer = Answer.substring(0, lastChineseSentenceIndex + 1);
-                audioWS.connecttospeech(answer.c_str(), "zh");
-                Answer = Answer.substring(lastChineseSentenceIndex + 2);
-            }
-        }
-        startPlay = true;
-    }
-    else
-    {
-        // digitalWrite(led3, LOW);
     }
 }
 
@@ -492,59 +441,23 @@ void wifiConnect(const char *wifiData[][2], int numNetworks)
     }
 }
 
-String getUrl(String Spark_url, String host, String path, String Date)
-{
 
-    // 拼接字符串
-    String signature_origin = "host: " + host + "\n";
-    signature_origin += "date: " + Date + "\n";
-    signature_origin += "GET " + path + " HTTP/1.1";
-    // signature_origin="host: spark-api.xf-yun.com\ndate: Mon, 04 Mar 2024 19:23:20 GMT\nGET /v3.1/chat HTTP/1.1";
-
-    // hmac-sha256 加密
-    unsigned char hmac[32];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
-    const size_t messageLength = signature_origin.length();
-    const size_t keyLength = APISecret.length();
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
-    mbedtls_md_hmac_starts(&ctx, (const unsigned char *)APISecret.c_str(), keyLength);
-    mbedtls_md_hmac_update(&ctx, (const unsigned char *)signature_origin.c_str(), messageLength);
-    mbedtls_md_hmac_finish(&ctx, hmac);
-    mbedtls_md_free(&ctx);
-
-    // base64 编码
-    String signature_sha_base64 = base64::encode(hmac, sizeof(hmac) / sizeof(hmac[0]));
-
-    // 替换Date
-    Date.replace(",", "%2C");
-    Date.replace(" ", "+");
-    Date.replace(":", "%3A");
-    String authorization_origin = "api_key=\"" + APIKey + "\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"" + signature_sha_base64 + "\"";
-    String authorization = base64::encode(authorization_origin);
-    String url = Spark_url + '?' + "authorization=" + authorization + "&date=" + Date + "&host=" + host;
-    Serial.println(url);
-    return url;
-}
 void setup()
 {
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     Serial.begin(115200);
-     Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
-
+    M5.begin(true, false,
+             true); 
+    _AtomSPK.begin();
     // pinMode(ADC,ANALOG);
-    pinMode(key, INPUT_PULLUP);
-    pinMode(34, INPUT_PULLUP);
-    pinMode(35, INPUT_PULLUP);
-    pinMode(led1, OUTPUT);
-    pinMode(led2, OUTPUT);
-    pinMode(led3, OUTPUT);
-    audio1.init();
-
+    // WiFi.mode(WIFI_AP_STA);   // Set the wifi mode to the mode compatible with
+    //                           // the AP and Station, and start intelligent
+    //                           // network configuration
+    // WiFi.beginSmartConfig();  // 设置wifi模式为AP 与 Station
     int numNetworks = sizeof(wifiData) / sizeof(wifiData[0]);
     wifiConnect(wifiData, numNetworks);
-
+    setBuff(0xff, 0x00, 0x00);
+    M5.dis.displaybuff(DisBuff);
     // WiFi.mode(WIFI_AP_STA);   
     // if(WiFi.beginSmartConfig())
     // {
@@ -591,51 +504,49 @@ void setup()
     }
     http.end();
        Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
-    audioWS.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audioWS.setVolume(50);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-    //url1 = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-    // ip最后一个.后面的字符替换为174
-    String ip = WiFi.localIP().toString();
-    ip.replace(ip.substring(ip.lastIndexOf(".") + 1), "174");
-    url1 = "ws://" + ip + ":8765";
-    Serial.println(url1);
-    urlTime = millis();
+    url = "ws://192.168.216.174:8765";
+    //url1 = getUrl("ws://192.168.216.174:8765", "192.168.216.174", "/wss", Date);
+    url1 = "ws://192.168.216.174:8765";
 
     ///////////////////////////////////
 }
 
 void loop()
 {
-
+    delay(100);
+    M5.update();
     //webSocketClient.poll();
     webSocketClient1.poll();
     // delay(10);
-    if (startPlay)
-    {
-        voicePlay();
-    }
 
-    audioWS.loop();
+    audio2.loop();
 
-    if (audioWS.isplaying == 1)
+    if (isplaying == 1)
     {
-        digitalWrite(led3, HIGH);
+        Serial.printf("Start setBuff red green\r\n\r\n");
+        setBuff(0x40, 0x40, 0x00);
+        M5.dis.displaybuff(DisBuff);
     }
     else
     {
-        digitalWrite(led3, LOW);
-        if ((urlTime + 240000 < millis()) && (audioWS.isplaying == 0))
-        {
-            urlTime = millis();
-        }
+        setBuff(0x00, 0x00, 0x40);
+        M5.dis.displaybuff(DisBuff);
+        // if ((urlTime + 240000 < millis()) && (isplaying == 0))
+        // {
+        //     urlTime = millis();
+        //     url = "ws://192.168.216.174:8765";
+        //     url1 = "ws://192.168.216.174:8765";
+        // }
     }
+    static int lastms = 0;
 
-    if (digitalRead(key) == 0)
+    if (M5.Btn.isPressed())
     {
-        audioWS.isplaying = 0;
+        Serial.printf("Btn is pressed\r\n");
+
+        isplaying = 0;
         startPlay = false;
         isReady = false;
         Answer = "";
@@ -643,11 +554,14 @@ void loop()
 
         adc_start_flag = 1;
         // Serial.println(esp_get_free_heap_size());
-
+        data_offset = 0;
+        Spakeflag   = false;
+        InitI2SSpeakOrMic(MODE_MIC);
+        
         askquestion = "";
-        // audioWS.connecttospeech(askquestion.c_str(), "zh");
+        // audio2.connecttospeech(askquestion.c_str(), "zh");
         ConnServer1();
-        // ConnServer();
+
         // delay(6000);
         // audio1.Record();
         adc_complete_flag = 0;
@@ -657,76 +571,15 @@ void loop()
     }
 }
 
-void getText(String role, String content)
-{
-    checkLen(text);
-    DynamicJsonDocument jsoncon(1024);
-    jsoncon["role"] = role;
-    jsoncon["content"] = content;
-    text.add(jsoncon);
-    jsoncon.clear();
-    String serialized;
-    serializeJson(text, serialized);
-    Serial.print("text: ");
-    Serial.println(serialized);
-    // serializeJsonPretty(text, Serial);
-}
-
-int getLength(JsonArray textArray)
-{
-    int length = 0;
-    for (JsonObject content : textArray)
-    {
-        const char *temp = content["content"];
-        int leng = strlen(temp);
-        length += leng;
-    }
-    return length;
-}
-
-void checkLen(JsonArray textArray)
-{
-    while (getLength(textArray) > 3000)
-    {
-        textArray.remove(0);
-    }
-    // return textArray;
-}
-
-DynamicJsonDocument gen_params(const char *appid, const char *domain)
-{
-    DynamicJsonDocument data(2048);
-
-    JsonObject header = data.createNestedObject("header");
-    header["app_id"] = appid;
-    header["uid"] = "1234";
-
-    JsonObject parameter = data.createNestedObject("parameter");
-    JsonObject chat = parameter.createNestedObject("chat");
-    chat["domain"] = domain;
-    chat["temperature"] = 0.5;
-    chat["max_tokens"] = 1024;
-
-    JsonObject payload = data.createNestedObject("payload");
-    JsonObject message = payload.createNestedObject("message");
-
-    JsonArray textArray = message.createNestedArray("text");
-    for (const auto &item : text)
-    {
-        textArray.add(item);
-    }
-    return data;
-}
-
 float calculateRMS(uint8_t *buffer, int bufferSize)
 {
     float sum = 0;
     int16_t sample;
 
-    for (int i = 0; i < bufferSize; i += 2)
+    for (int i = 0; i < bufferSize; i ++)
     {
 
-        sample = (buffer[i + 1] << 8) | buffer[i];
+        sample = (buffer[i]) ;
         sum += sample * sample;
     }
 
