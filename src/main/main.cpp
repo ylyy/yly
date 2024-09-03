@@ -2,13 +2,11 @@
 #include <Arduino.h>
 #include "base64.h"
 #include "WiFi.h"
-#include "Audio2.h"
 #include <WiFiClientSecure.h>
 #include "HTTPClient.h"
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
 #include <driver/i2s.h>
-#include "AtomSPK.h"
 
 using namespace websockets;
 #define key 0
@@ -16,7 +14,7 @@ using namespace websockets;
 #define led1 19
 const char *wifiData[][2] = {
     {"IQOO", "88888888"}, // 替换为自己常用的wifi名和密码
-    {"913", "88888913"},
+    // {"222", "12345678"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
 
@@ -35,7 +33,6 @@ int receiveFrame = 0;
 int noise = 180;
 int isplaying = 0;
 HTTPClient https;
-ATOMSPK _AtomSPK;
 
 hw_timer_t *timer = NULL;
 
@@ -43,19 +40,20 @@ uint8_t adc_start_flag = 0;
 uint8_t adc_complete_flag = 0;
 
 // Audio1 audio1;
-Audio2 audio2(false, 3, I2S_NUM_0);
+// Audio2 audio2(false, 3, I2S_NUM_1);
 
 #include "AudioFileSourceICYStream.h"
 #include "AudioFileSourceBuffer.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 
-const char *URL="http://192.168.42.174:8000/4427989152-out.mp3";
+const char *URL="http://120.76.98.140:8000/4427989152-out.mp3";
 
 AudioGeneratorMP3 *mp3;
 AudioFileSourceICYStream *file;
 AudioFileSourceBuffer *buff;
 AudioOutputI2S *out;
+
 
 void MDCallback(void *cbData, const char *type, bool isUnicode, const char *string)
 {
@@ -81,6 +79,19 @@ void StatusCallback(void *cbData, int code, const char *string)
   s1[sizeof(s1)-1]=0;
   Serial.printf("STATUS(%s) '%d' = '%s'\n", ptr, code, s1);
   Serial.flush();
+}
+void updateAudioStream(const char* newURL) {
+    if (file) {
+        delete file;
+    }
+    if (buff) {
+        delete buff;
+    }
+    file = new AudioFileSourceICYStream(newURL);
+    file->RegisterMetadataCB(MDCallback, (void*)"ICY");
+    buff = new AudioFileSourceBuffer(file, 10240);
+    buff->RegisterStatusCB(StatusCallback, (void*)"buffer");
+    mp3->begin(buff, out);
 }
 // 减小缓冲区大小或使用动态分配
 // uint8_t microphonedata0[1024 * 80];
@@ -143,7 +154,7 @@ String Answer = "";
 const char *appId1 = "72e78f96"; 
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.1/chat";
-const char *websockets_server1 = "ws://192.168.216.174:8765";
+const char *websockets_server1 = "ws://192.168.207.174:8765";
 using namespace websockets;
 
 #define SPEAK_I2S_NUMBER I2S_NUM_0
@@ -230,31 +241,22 @@ void onMessageCallback(WebsocketsMessage message)
             receiveFrame++;
             Serial.print("receiveFrame:");
             Serial.println(receiveFrame);
-            //获取这个w内容{"code": 0, "data": {"status": 1, "result": {"ws": [{"cw": [{"w": “”
+            Serial.println(message.data());
+            //{"code": 0, "data": {"status": 2, "result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"}}
             String result = jsonDocument["data"]["result"];
-            // allocateMicrophoneBuffer();
-            // 将 result 的数据复制到 microphonedata0
-            // memcpy(microphonedata0, result.c_str(), result.length());
-            // Serial.println((char*)microphonedata0);
-            Serial.println(result.length());
             if (result.length() > 0 && (isplaying == 0))
             {
                 //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
                 //result转换为仅获取最后一个/后的字符串
-                String url = "http://192.168.216.174:8000/" + result.substring(result.lastIndexOf('/') + 1);
-                // i2s_driver_uninstall(SPEAK_I2S_NUMBER);
-                InitI2SSpeakOrMic(MODE_SPK);
-                // _AtomSPK.begin();
-                // size_t bytes_written;
-                // while (1) {
-                //     _AtomSPK.playRAW((uint8_t*)result.c_str(), result.length(), true, false);
-                //     delay(10); // 添加适当的延时
-                // }
-                Serial.println(url);                
-                audio2.connecttohost(url.c_str());
-                
+                // InitI2SSpeakOrMic(MODE_SPK);
+                i2s_driver_uninstall(SPEAK_I2S_NUMBER);
+
+                String audioStreamURL = "http://192.168.207.174:8000/" + result.substring(result.lastIndexOf("/") + 1);
+                Serial.println(audioStreamURL);
+                URL = audioStreamURL.c_str();
+                // audio2.connecttohost(audioStreamURL.c_str());
+                updateAudioStream(URL);
                 startPlay = true;
-                // freeMicrophoneBuffer();
             }
         }
     }
@@ -333,7 +335,6 @@ void onEventsCallback1(WebsocketsEvent event, String data)
                 data["audio"] = base64::encode((byte *)microphonedata0, DATA_SIZE);
                 data["encoding"] = "raw";
                 j++;
-                buff = new AudioFileSourceBuffer(file, 10240);
 
                 JsonObject common = doc.createNestedObject("common");
                 common["app_id"] = appId1;
@@ -448,7 +449,6 @@ void setup()
     Serial.begin(115200);
     M5.begin(true, false,
              true); 
-    _AtomSPK.begin();
     // pinMode(ADC,ANALOG);
     // WiFi.mode(WIFI_AP_STA);   // Set the wifi mode to the mode compatible with
     //                           // the AP and Station, and start intelligent
@@ -506,22 +506,27 @@ void setup()
        Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = "ws://192.168.216.174:8765";
-    //url1 = getUrl("ws://192.168.216.174:8765", "192.168.216.174", "/wss", Date);
-    url1 = "ws://192.168.216.174:8765";
-
+    url = "ws://192.168.207.174:8765";
+    //url1 = getUrl("ws://192.168.207.174:8765", "120.76.98.140", "/wss", Date);
+    url1 = "ws://192.168.207.174:8765";
+    audioLogger = &Serial;
+    file = new AudioFileSourceICYStream(URL);
+    file->RegisterMetadataCB(MDCallback, (void*)"ICY");
+    buff = new AudioFileSourceBuffer(file, 10240);
+    buff->RegisterStatusCB(StatusCallback, (void*)"buffer");
+    out = new AudioOutputI2S();
+    mp3 = new AudioGeneratorMP3();
+    mp3->RegisterStatusCB(StatusCallback, (void*)"mp3");
     ///////////////////////////////////
 }
-
 void loop()
 {
-    delay(100);
     M5.update();
     //webSocketClient.poll();
     webSocketClient1.poll();
     // delay(10);
 
-    audio2.loop();
+    // audio2.loop();
 
     if (isplaying == 1)
     {
@@ -533,15 +538,20 @@ void loop()
     {
         setBuff(0x00, 0x00, 0x40);
         M5.dis.displaybuff(DisBuff);
-        // if ((urlTime + 240000 < millis()) && (isplaying == 0))
-        // {
-        //     urlTime = millis();
-        //     url = "ws://192.168.216.174:8765";
-        //     url1 = "ws://192.168.216.174:8765";
-        // }
     }
     static int lastms = 0;
-
+    
+    if (mp3->isRunning()) {
+        M5.dis.drawpix(0, 0x00ffff);
+        if (millis()-lastms > 1000) {
+        lastms = millis();
+        Serial.printf("Running for %d ms...\n", lastms);
+        Serial.flush();
+        }
+        if (!mp3->loop()) mp3->stop();
+    } else {
+        M5.dis.drawpix(0, 0xffffff);
+    }
     if (M5.Btn.isPressed())
     {
         Serial.printf("Btn is pressed\r\n");
