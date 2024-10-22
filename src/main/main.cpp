@@ -442,6 +442,59 @@ void wifiConnect(const char *wifiData[][2], int numNetworks)
     }
 }
 
+// 新增函数用于发送音频数据
+void sendAudioData(uint8_t* audioBuffer, size_t bufferSize) {
+    HTTPClient http;
+    
+    // 设置服务器URL
+    String url = "http://101.35.160.32:5000/v1/device/voice_to_voice";
+    String username="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjEwMywic2NvcGUiOiJhZG1pbiIsImlhdCI6MTcyNzAxMjU2NSwiZXhwIjoxNzI5NjA0NTY1fQ.nzWoe2KtCka4wFHf65UmC4Pxjtslig9UJPao-UyZ0Ac";
+    url += "?username=" + String(username); // 添加username参数
+    http.begin(url);
+    // 设置HTTP头
+    http.addHeader("Content-Type", "application/json");
+    
+    // 发送POST请求
+    int httpResponseCode = http.POST(audioBuffer, bufferSize);
+    
+    if (httpResponseCode > 0) {
+        String response = http.getString();
+        Serial.println("Server response: " + response);
+        // 这里可以处理服务器返回的转录文本
+    } else {
+        Serial.print("Error on sending POST: ");
+        Serial.println(httpResponseCode);
+    }
+    
+    http.end();
+}
+
+// 修改录音和发送逻辑
+void recordAndSendAudio() {
+    InitI2SSpeakOrMic(MODE_MIC);
+    
+    const int bufferSize = 1024 * 16; // 根据需要调整缓冲区大小
+    uint8_t* audioBuffer = (uint8_t*)malloc(bufferSize);
+    
+    if (!audioBuffer) {
+        Serial.println("Failed to allocate memory for audio buffer");
+        return;
+    }
+    
+    size_t bytesRead = 0;
+    
+    // 录音
+    i2s_read(SPEAK_I2S_NUMBER, audioBuffer, bufferSize, &bytesRead, portMAX_DELAY);
+    
+    if (bytesRead > 0) {
+        // 发送录音数据到服务器
+        sendAudioData(audioBuffer, bytesRead);
+    }
+    
+    free(audioBuffer);
+}
+
+#define ADC_PIN 34 // 使用ADC1的引脚
 
 void setup()
 {
@@ -474,36 +527,36 @@ void setup()
     // }
     
     // 配网成功后，立即请求接口
-    String bssid = WiFi.BSSIDstr(); // 获取 BSSID
-    String uuid = String(ESP.getEfuseMac()); // 获取 UUID
-    HTTPClient http;
-    http.begin("http://120.76.98.140/app/api/v1/toy/save-uuid");
+    // String bssid = WiFi.BSSIDstr(); // 获取 BSSID
+    // String uuid = String(ESP.getEfuseMac()); // 获取 UUID
+    // HTTPClient http;
+    // http.begin("http://120.76.98.140/app/api/v1/toy/save-uuid");
     
-    String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
-    String form = "--" + boundary + "\r\n";
-    form += "Content-Disposition: form-data; name=\"wifi_bssid\"\r\n\r\n" + bssid + "\r\n";
-    form += "--" + boundary + "\r\n";
-    form += "Content-Disposition: form-data; name=\"toy_uuid\"\r\n\r\n" + uuid + "\r\n";
-    form += "--" + boundary + "--\r\n";
-    Serial.println(form);
+    // String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    // String form = "--" + boundary + "\r\n";
+    // form += "Content-Disposition: form-data; name=\"wifi_bssid\"\r\n\r\n" + bssid + "\r\n";
+    // form += "--" + boundary + "\r\n";
+    // form += "Content-Disposition: form-data; name=\"toy_uuid\"\r\n\r\n" + uuid + "\r\n";
+    // form += "--" + boundary + "--\r\n";
+    // Serial.println(form);
     
 
-    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+    // http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
     
-    int httpCode = http.POST(form);
+    // int httpCode = http.POST(form);
     
-    if (httpCode > 0) {
-        if (httpCode == HTTP_CODE_OK) {
-            String payload = http.getString();
-            Serial.println("Response: " + payload);
-        } else {
-            Serial.printf("Error: %d\n", httpCode);
-        }
-    } else {
-        Serial.printf("HTTP请求失败，错误原因: %s\n", http.errorToString(httpCode).c_str());
-    }
-    http.end();
-       Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+    // if (httpCode > 0) {
+    //     if (httpCode == HTTP_CODE_OK) {
+    //         String payload = http.getString();
+    //         Serial.println("Response: " + payload);
+    //     } else {
+    //         Serial.printf("Error: %d\n", httpCode);
+    //     }
+    // } else {
+    //     Serial.printf("HTTP请求失败，错误原因: %s\n", http.errorToString(httpCode).c_str());
+    // }
+    // http.end();
+    //    Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     url = "ws://192.168.207.174:8765";
@@ -518,6 +571,11 @@ void setup()
     mp3 = new AudioGeneratorMP3();
     mp3->RegisterStatusCB(StatusCallback, (void*)"mp3");
     ///////////////////////////////////
+    pinMode(ADC_PIN, INPUT);
+    analogReadResolution(12);
+    
+    // 设置G21为输入模式
+    pinMode(21, INPUT);
 }
 void loop()
 {
@@ -552,33 +610,18 @@ void loop()
     } else {
         M5.dis.drawpix(0, 0xffffff);
     }
-    if (M5.Btn.isPressed())
-    {
-        Serial.printf("Btn is pressed\r\n");
-
-        isplaying = 0;
-        startPlay = false;
-        isReady = false;
-        Answer = "";
-        Serial.printf("Start recognition\r\n\r\n");
-
-        adc_start_flag = 1;
-        // Serial.println(esp_get_free_heap_size());
-        data_offset = 0;
-        Spakeflag   = false;
-        InitI2SSpeakOrMic(MODE_MIC);
-        
-        askquestion = "";
-        // audio2.connecttospeech(askquestion.c_str(), "zh");
-        ConnServer1();
-
-        // delay(6000);
-        // audio1.Record();
-        adc_complete_flag = 0;
-
-        // Serial.println(text);
-        // checkLen(text);
+    // 检测G21是否为高电平
+    if (digitalRead(21) == HIGH) {
+        Serial.println("G21检测到高电平,开始录音并发送");
+        recordAndSendAudio();
     }
+    
+    // 检测g25的电压
+    int g25_voltage = analogRead(G25);
+    Serial.println("G25 voltage: " + String(g25_voltage));
+    int adc_value = analogRead(ADC_PIN);
+    Serial.println("ADC value: " + String(adc_value));
+    delay(1000); // 每秒读取一次
 }
 
 float calculateRMS(uint8_t *buffer, int bufferSize)
@@ -597,3 +640,4 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
 
     return sqrt(sum);
 }
+
