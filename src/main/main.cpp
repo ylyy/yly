@@ -15,12 +15,12 @@ using namespace websockets;
 #define led2 18
 #define led1 19
 const char *wifiData[][2] = {
-    {"IQOO", "88888888"}, // 替换为自己常用的wifi名和密码
+    {"aaaaa", "88888888"}, // 替换为自己常用的wifi名和密码
     // {"222", "12345678"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
 
-String APPID = "72e78f96"; 
+String APPID = "72e78f96";
 String APIKey = "7d40a5a094a70adb709169ed3be2aac1";
 String APISecret = "Zjc3ZGM2YjY4M2ExNTJlM2JmNWI2NjJl";
 
@@ -66,7 +66,7 @@ DynamicJsonDocument gen_params(const char *appid, const char *domain);
 String askquestion = "";
 String Answer = "";
 
-const char *appId1 = "72e78f96"; 
+const char *appId1 = "72e78f96";
 const char *domain1 = "generalv3";
 const char *websockets_server = "ws://spark-api.xf-yun.com/v3.1/chat";
 // 修改 websockets_server1 的定义方式
@@ -104,7 +104,7 @@ void onMessageCallback(WebsocketsMessage message)
             if (result.length() > 0 && (audio2.isplaying == 0))
             {
                 //"result": "http://localhost:8000//Users/test/Downloads/esp32-chattoys-server/media/4399404064-out.wav"
-                //result转换为仅获取最后一个/后的字符串
+                // result转换为仅获取最后一个/后的字符串
                 String audioStreamURL = "http://localhost:8000/" + result.substring(result.lastIndexOf("/") + 1);
                 Serial.println(audioStreamURL);
                 audio2.connecttohost(audioStreamURL.c_str());
@@ -285,7 +285,7 @@ void onEventsCallback1(WebsocketsEvent event, String data)
                 data["audio"] = "";
                 data["encoding"] = "raw";
                 j++;
-                //jsonString发送{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}
+                // jsonString发送{'data': {'status': 2, 'format': 'audio/L16;rate=8000', 'audio': '', 'encoding': 'raw'}}
                 String jsonString;
                 serializeJson(doc, jsonString);
                 Serial.println("send_2:");
@@ -532,6 +532,137 @@ String getUrl(String Spark_url, String host, String path, String Date)
     return url;
 }
 
+// 添加WAV文件头结构
+struct WAVHeader {
+    char riff[4] = {'R', 'I', 'F', 'F'};
+    uint32_t chunkSize;
+    char wave[4] = {'W', 'A', 'V', 'E'};
+    char fmt[4] = {'f', 'm', 't', ' '};
+    uint32_t subchunk1Size = 16;
+    uint16_t audioFormat = 1;
+    uint16_t numChannels = 1;
+    uint32_t sampleRate = 8000;
+    uint32_t byteRate = 16000;
+    uint16_t blockAlign = 2;
+    uint16_t bitsPerSample = 16;
+    char data[4] = {'d', 'a', 't', 'a'};
+    uint32_t subchunk2Size;
+};
+
+// 修改sendAudioData函数
+void sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
+{
+    HTTPClient http;
+    String url = "http://101.35.160.32:5000/v1/device/voice_to_voice";
+    http.begin(url);
+
+    String username = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjEwMywic2NvcGUiOiJhZG1pbiIsImlhdCI6MTcyNzAxMjU2NSwiZXhwIjoxNzI5NjA0NTY1fQ.nzWoe2KtCka4wFHf65UmC4Pxjtslig9UJPao-UyZ0Ac";
+    String password = "";
+    http.setAuthorization(username.c_str(), password.c_str());
+    http.addHeader("Content-Type", "application/json");
+
+    if (audioBuffer != nullptr && bufferSize > 0) {
+        // 创建WAV头
+        WAVHeader header;
+        header.chunkSize = 36 + bufferSize;
+        header.subchunk2Size = bufferSize;
+
+        // 创建包含WAV头和音频数据的缓冲区
+        size_t totalSize = sizeof(WAVHeader) + bufferSize;
+        uint8_t* wavBuffer = new uint8_t[totalSize];
+        memcpy(wavBuffer, &header, sizeof(WAVHeader));
+        memcpy(wavBuffer + sizeof(WAVHeader), audioBuffer, bufferSize);
+
+        // 将WAV数据转换为base64
+        String base64Audio = base64::encode(wavBuffer, totalSize);
+        delete[] wavBuffer;
+
+        // 构建JSON请求体
+        DynamicJsonDocument doc(16384);
+        doc["role_id"] = 2;
+        doc["chunk"] = base64Audio;
+
+        String jsonBody;
+        serializeJson(doc, jsonBody);
+        Serial.println("发送请求: " + jsonBody);
+
+        int httpResponseCode = http.POST(jsonBody);
+        Serial.println("服务器响应码: " + String(httpResponseCode));
+        if (httpResponseCode > 0) {
+            String response = http.getString();
+            Serial.println("服务器响应: " + response);
+        } else {
+            Serial.print("发送POST请求时出错: ");
+            Serial.println(httpResponseCode);
+        }
+    } else {
+        // 发送结束标志
+        DynamicJsonDocument doc(1024);
+        doc["role_id"] = 2;
+        doc["chunk"] = "";
+        String jsonBody;
+        serializeJson(doc, jsonBody);
+        http.POST(jsonBody);
+    }
+
+    http.end();
+}
+
+// 修改录音和发送逻辑
+void recordAndSendAudio()
+{
+    Serial.println("开始录音和发送");
+    digitalWrite(led2, HIGH);
+    int silence = 0;
+    int firstframe = 1;
+    int voicebegin = 0;
+    int voice = 0;
+    DynamicJsonDocument doc(2500);
+
+    while (1)
+    {
+        doc.clear();
+        JsonObject data = doc.createNestedObject("data");
+        audio1.Record();
+        float rms = calculateRMS((uint8_t *)audio1.wavData[0], 1280);
+        printf("RMS: %f\n", rms);
+
+        if (rms < noise)
+        {
+            if (voicebegin == 1)
+            {
+                silence++;
+            }
+        }
+        else
+        {
+            voice++;
+            if (voice >= 5)
+            {
+                voicebegin = 1;
+            }
+            silence = 0;
+        }
+
+        if (silence == 6)
+        {
+            // 发送结束标志
+            sendAudioData(nullptr, 0); // 发送空数据表示结束
+            digitalWrite(led2, LOW);
+            break;
+        }
+
+        if (firstframe == 1)
+        {
+            firstframe = 0;
+        }
+
+        // 发送录音数据
+        sendAudioData(reinterpret_cast<uint8_t *>(audio1.wavData[0]), 1280);
+        delay(40);
+    }
+}
+
 void getTimeFromServer()
 {
     String timeurl = "https://www.baidu.com";
@@ -551,6 +682,7 @@ void setup()
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     Serial.begin(115200);
     // pinMode(ADC,ANALOG);
+    pinMode(17, INPUT);
     pinMode(key, INPUT_PULLUP);
     pinMode(34, INPUT_PULLUP);
     pinMode(35, INPUT_PULLUP);
@@ -569,8 +701,8 @@ void setup()
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-    //url1 = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-    // ip最后一个.后面的字符替换为174
+    // url1 = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
+    //  ip最后一个.后面的字符替换为174
     String ip = WiFi.localIP().toString();
     ip.replace(ip.substring(ip.lastIndexOf(".") + 1), "174");
     url1 = "ws://" + ip + ":8765";
@@ -583,7 +715,7 @@ void setup()
 void loop()
 {
 
-    //webSocketClient.poll();
+    // webSocketClient.poll();
     webSocketClient1.poll();
     // delay(10);
     if (startPlay)
@@ -606,26 +738,21 @@ void loop()
         }
     }
 
+    // if (digitalRead(17) == HIGH)
+
     if (digitalRead(key) == 0)
     {
         audio2.isplaying = 0;
         startPlay = false;
         isReady = false;
         Answer = "";
-        Serial.printf("Start recognition\r\n\r\n");
+        Serial.printf("开始识别\r\n\r\n");
 
         adc_start_flag = 1;
-        // Serial.println(esp_get_free_heap_size());
 
-        if (urlTime + 240000 < millis()) // 超过4分钟，重新做一次鉴权
-        {
-            urlTime = millis();
-            getTimeFromServer();
-            url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
-        }
         askquestion = "";
         // audio2.connecttospeech(askquestion.c_str(), "zh");
-        ConnServer1();
+        recordAndSendAudio();
         // ConnServer();
         // delay(6000);
         // audio1.Record();
@@ -713,3 +840,4 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
 
     return sqrt(sum);
 }
+
