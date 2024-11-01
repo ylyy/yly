@@ -167,6 +167,7 @@ public:
     const char *getCodecname() { return codecname[m_codec]; }
     void unicode2utf8(char *buff, uint32_t len);
     uint8_t isplaying = 0;
+    bool connectToStreamingAPI(const char* url);
 
 private:
 #ifndef ESP_ARDUINO_VERSION_VAL

@@ -1,5 +1,5 @@
 #include "I2S.h"
-#define SAMPLE_RATE (4000)
+#define SAMPLE_RATE (8000)
 #define PIN_I2S_BCLK 4
 #define PIN_I2S_LRC 15
 #define PIN_I2S_DIN 22
@@ -16,7 +16,7 @@ const int BLOCK_SIZE = 128;
 //  -   DATA bits are right-shifted by one with respect to LRC edges.
 I2S::I2S()
 {
-
+  
   BITS_PER_SAMPLE = I2S_BITS_PER_SAMPLE_32BIT;
   i2s_config_t i2s_config = {
       .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),

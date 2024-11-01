@@ -31,11 +31,11 @@ class Audio1
                               "\"speech\":\"";
 
   const char *footer_format = "\",\"len\":";
-  void CreateWavHeader(byte *header, int waveDataSize);
   String parseJSON(const char *jsonResponse);
   float calculateRMS(uint8_t *buffer, int bufferSize);
 
 public:
+  void CreateWavHeader(byte *header, int waveDataSize);
   static const int wavDataSize = 30000; // It must be multiple of dividedWavDataSize. Recording time is about 1.9 second.
   static const int dividedWavDataSize = i2sBufferSize / 4;
   char **wavData;                          // It's divided. Because large continuous memory area can't be allocated in esp32.

@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
 using namespace websockets;
+#include <queue>
 
 #define key 0
 #define ADC 32
@@ -46,6 +47,9 @@ Audio2 audio2(false, 3, I2S_NUM_1);
 #define I2S_DOUT 27 // DIN
 #define I2S_BCLK 26 // BCLK
 #define I2S_LRC 25  // LRC
+
+// 定义一个队列来存储音频URL
+std::queue<String> audioQueue;
 
 void gain_token(void);
 void getText(String role, String content);
@@ -548,15 +552,27 @@ struct WAVHeader {
     char data[4] = {'d', 'a', 't', 'a'};
     uint32_t subchunk2Size;
 };
-
+// 新增函数：播放下一个音频
+void playNextAudio() {
+    if (!audioQueue.empty()) {
+        String audioUrl = audioQueue.front();
+        audioQueue.pop();
+        Serial.println("开始播放音频: " + audioUrl);
+        audio2.connecttohost(audioUrl.c_str());
+    }
+    else
+    {
+        // Serial.println("音频队列已空");
+    }
+}
 // 修改sendAudioData函数
-void sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
+bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
 {
     HTTPClient http;
     String url = "http://101.35.160.32:5000/v1/device/voice_to_voice";
     http.begin(url);
 
-    String username = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjEwMywic2NvcGUiOiJhZG1pbiIsImlhdCI6MTcyNzAxMjU2NSwiZXhwIjoxNzI5NjA0NTY1fQ.nzWoe2KtCka4wFHf65UmC4Pxjtslig9UJPao-UyZ0Ac";
+    String username = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjEwMywic2NvcGUiOiJhZG1pbiIsImlhdCI6MTcyOTQ4NTQ0MywiZXhwIjoxNzMyMDc3NDQzfQ.SavITbhla70iloEusKJd-2wfYueKywNTXSwRpcGPDfQ";
     String password = "";
     http.setAuthorization(username.c_str(), password.c_str());
     http.addHeader("Content-Type", "application/json");
@@ -591,21 +607,59 @@ void sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
         if (httpResponseCode > 0) {
             String response = http.getString();
             Serial.println("服务器响应: " + response);
+            
+            // 分割响应字符串
+            int startPos = 0;
+            int endPos = 0;
+            bool hasAddedAudio = false;
+
+            while ((endPos = response.indexOf("}", startPos)) != -1) {
+                String jsonPart = response.substring(startPos, endPos + 1);
+                
+                DynamicJsonDocument doc(1024);
+                DeserializationError error = deserializeJson(doc, jsonPart);
+                
+                if (!error) {
+                    if (doc.containsKey("voice_path") && doc.containsKey("url") && doc.containsKey("port")) {
+                        String voicePath = doc["voice_path"].as<String>();
+                        String baseUrl = doc["url"].as<String>();
+                        int port = doc["port"].as<int>();
+                        
+                        // 构建完整的音频URL
+                        String token = "ht-4b8536b544e0784309820c3d11649a14";
+                        voicePath = voicePath.substring(0, voicePath.length() - 4) + ".mp3";
+
+                        String audioUrl = baseUrl + ":" + String(port) + 
+                                          "/flashsummary/retrieveFileData?stream=True" + "&token=" + token + "&voice_audio_path=" + voicePath;
+                        
+                        Serial.println("添加音频到队列: " + audioUrl);
+                        
+                        // 将音频URL添加到队列
+                        audioQueue.push(audioUrl);
+                        hasAddedAudio = true;
+                    }
+                }
+                
+                startPos = endPos + 1;
+            }
+
+            // 如果当前没有音频在播放，开始播放队列中的第一个音频
+            if (hasAddedAudio && audio2.isplaying == 0) {
+                playNextAudio();
+            }
+            
+            http.end();
+            return hasAddedAudio;
         } else {
             Serial.print("发送POST请求时出错: ");
             Serial.println(httpResponseCode);
+            http.end();
+            return false;
         }
-    } else {
-        // 发送结束标志
-        DynamicJsonDocument doc(1024);
-        doc["role_id"] = 2;
-        doc["chunk"] = "";
-        String jsonBody;
-        serializeJson(doc, jsonBody);
-        http.POST(jsonBody);
-    }
+    } 
 
     http.end();
+    return false;
 }
 
 // 修改录音和发送逻辑
@@ -637,20 +691,25 @@ void recordAndSendAudio()
         else
         {
             voice++;
-            if (voice >= 5)
+            if (voice >= 4)
             {
                 voicebegin = 1;
+            }
+            else
+            {
+                voicebegin = 0;
             }
             silence = 0;
         }
 
-        if (silence == 6)
-        {
-            // 发送结束标志
-            sendAudioData(nullptr, 0); // 发送空数据表示结束
-            digitalWrite(led2, LOW);
-            break;
-        }
+        // if (silence == 6)
+        // {
+        //     // 发送结束标志
+        //     sendAudioData(nullptr, 0); // 发送空数据表示结束
+        //     digitalWrite(led2, LOW);
+        //     Serial.println("录音结束");
+        //     break;
+        // }
 
         if (firstframe == 1)
         {
@@ -658,8 +717,11 @@ void recordAndSendAudio()
         }
 
         // 发送录音数据
-        sendAudioData(reinterpret_cast<uint8_t *>(audio1.wavData[0]), 1280);
-        delay(40);
+        if (sendAudioData(reinterpret_cast<uint8_t *>(audio1.wavData[0]), 1280))
+        {
+            break;
+        }
+        // delay(40);
     }
 }
 
@@ -697,7 +759,7 @@ void setup()
     getTimeFromServer();
 
     audio2.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audio2.setVolume(50);
+    audio2.setVolume(20);
 
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
@@ -718,11 +780,6 @@ void loop()
     // webSocketClient.poll();
     webSocketClient1.poll();
     // delay(10);
-    if (startPlay)
-    {
-        voicePlay();
-    }
-
     audio2.loop();
 
     if (audio2.isplaying == 1)
@@ -732,10 +789,8 @@ void loop()
     else
     {
         digitalWrite(led3, LOW);
-        if ((urlTime + 240000 < millis()) && (audio2.isplaying == 0))
-        {
-            urlTime = millis();
-        }
+        // 当前音频播放结束，检查是否有下一个音频需要播放
+        playNextAudio();
     }
 
     // if (digitalRead(17) == HIGH)

@@ -463,7 +463,62 @@ void Audio2::setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl)
     if (timeout_ms_ssl)
         m_timeout_ms_ssl = timeout_ms_ssl;
 }
+//
+bool Audio2::connectToStreamingAPI(const char* url) {
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
 
+    if (url == NULL) {
+        AUDIO_INFO("URL is empty");
+        xSemaphoreGiveRecursive(mutex_audio);
+        return false;
+    }
+
+    setDefaults();
+    m_f_ssl = true;
+    _client = static_cast<WiFiClient *>(&clientsecure);
+
+    // 解析 URL
+    char host[100] = {0};
+    char path[256] = {0};
+    uint16_t port = 443;  // 默认 HTTPS 端口
+
+    // 提取 host 和 port
+    if (sscanf(url, "https://%99[^:]:%hu", host, &port) < 2) {
+        sscanf(url, "https://%99[^/]", host);
+    }
+
+    // 提取 path 和查询参数
+    const char* pathStart = strchr(url + 8, '/');  // +8 跳过 "https://"
+    if (pathStart) {
+        strncpy(path, pathStart, sizeof(path) - 1);
+    }
+
+    AUDIO_INFO("Connecting to streaming API: %s:%d%s", host, port, path);
+
+    if (!_client->connect(host, port)) {
+        AUDIO_INFO("Connection failed");
+        xSemaphoreGiveRecursive(mutex_audio);
+        return false;
+    }
+
+    char request[512];
+    snprintf(request, sizeof(request),
+             "GET %s HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "Connection: close\r\n"
+             "Accept-Encoding: identity\r\n\r\n",
+             path, host);
+
+    _client->print(request);
+
+    m_streamType = ST_WEBSTREAM;
+    isplaying = 1;
+    m_f_running = true;
+    setDatamode(HTTP_RESPONSE_HEADER);
+
+    xSemaphoreGiveRecursive(mutex_audio);
+    return true;
+}
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio2::connecttohost(const char *host, const char *user, const char *pwd)
 {
@@ -564,7 +619,7 @@ bool Audio2::connecttohost(const char *host, const char *user, const char *pwd)
         b64encode((const char *)toEncode, strlen(toEncode), authorization);
     }
 
-    //  AUDIO_INFO("Connect to \"%s\" on port %d, extension \"%s\"", hostwoext, port, extension);
+    AUDIO_INFO("Connect to \"%s\" on port %d, extension \"%s\"", hostwoext, port, extension);
 
     char rqh[strlen(h_host) + strlen(authorization) + 200]; // http request header
     rqh[0] = '\0';
@@ -3566,7 +3621,11 @@ void Audio2::processLocalFile()
     // end of file reached? - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if (f_fileDataComplete && InBuff.bufferFilled() < InBuff.getMaxBlockSize())
     {
-
+        sprintf(m_chbuf, "f_fileDataComplete && InBuff.bufferFilled() < InBuff.getMaxBlockSize()");
+        m_f_running = false;
+        m_streamType = ST_NONE;
+        isplaying = 0;  // Make sure to set isplaying to 0
+        audiofile.close();
         if (InBuff.bufferFilled())
         {
             if (!readID3V1Tag())
