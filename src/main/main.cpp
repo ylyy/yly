@@ -7,6 +7,8 @@
 #include "Audio2.h"
 #include <ArduinoJson.h>
 #include <queue>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define key 0
 #define ADC 32
@@ -22,6 +24,23 @@ const char *wifiData[][2] = {
 String APPID = "72e78f96";
 String APIKey = "7d40a5a094a70adb709169ed3be2aac1";
 String APISecret = "Zjc3ZGM2YjY4M2ExNTJlM2JmNWI2NjJl";
+// 在全局变量区域添加
+enum RecordState {
+    IDLE,
+    CALIBRATING,
+    RECORDING,
+    SENDING
+};
+
+RecordState recordState = IDLE;
+uint8_t* audioBuffer = nullptr;
+size_t bufferOffset = 0;
+int frameCount = 0;
+float noiseLevel = 0;
+int silence = 0;
+int voice = 0;
+int voicebegin = 0;
+unsigned long lastProcessTime = 0;
 
 bool ledstatus = true;
 bool startPlay = false;
@@ -45,9 +64,123 @@ Audio2 audio2(false, 3, I2S_NUM_1);
 #define I2S_DOUT 27 // DIN
 #define I2S_BCLK 26 // BCLK
 #define I2S_LRC 25  // LRC
+float calculateRMS(uint8_t *buffer, int bufferSize);
+bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize);
+void processAudioState();
 
 // 定义一个队来存储音频URL
 std::queue<String> audioQueue;
+
+// 在文件开头添加队列定义
+QueueHandle_t audioDataQueue;
+const int AUDIO_QUEUE_LENGTH = 5;
+const int AUDIO_BUFFER_SIZE = 25600; // 20帧 * 1280字节
+
+// 添加音频数据结构
+struct AudioData {
+    uint8_t* buffer;
+    size_t size;
+};
+
+// 添加录音任务函数
+void recordTask(void *parameter) {
+    while(1) {
+        if (adc_start_flag) {
+            Serial.println("开始录音");
+            digitalWrite(led2, HIGH);
+            
+            // 噪音校准
+            float noiseLevel = 0;
+            const int CALIBRATION_FRAMES = 10;
+            
+            for (int i = 0; i < CALIBRATION_FRAMES; i++) {
+                audio1.Record();
+                float rms = calculateRMS((uint8_t *)audio1.wavData[0], 1280);
+                noiseLevel += rms;
+                delay(40);
+            }
+            noiseLevel = (noiseLevel / CALIBRATION_FRAMES) * 1.5;
+            Serial.printf("噪音基准: %f\n", noiseLevel);
+
+            int silence = 0;
+            int voice = 0;
+            int voicebegin = 0;
+            int frameCount = 0;
+            const int FRAMES_TO_SEND = 20;
+            const size_t FRAME_SIZE = 1280;
+            
+            uint8_t* combinedBuffer = (uint8_t*)malloc(FRAME_SIZE * FRAMES_TO_SEND);
+            if (!combinedBuffer) {
+                Serial.println("内存分配失败");
+                digitalWrite(led2, LOW);
+                adc_start_flag = 0;
+                continue;
+            }
+            
+            size_t bufferOffset = 0;
+            
+            while (adc_start_flag) {
+                audio1.Record();
+                float rms = calculateRMS((uint8_t *)audio1.wavData[0], FRAME_SIZE);
+
+                if (rms > noiseLevel) {
+                    voice++;
+                    if (voice >= 3) {
+                        voicebegin = 1;
+                        silence = 0;
+                    }
+                } else {
+                    if (voicebegin) {
+                        silence++;
+                    }
+                }
+
+                if (voicebegin == 1) {
+                    memcpy(combinedBuffer + bufferOffset, audio1.wavData[0], FRAME_SIZE);
+                    bufferOffset += FRAME_SIZE;
+                    frameCount++;
+
+                    if (frameCount >= FRAMES_TO_SEND) {
+                        AudioData* audioData = new AudioData;
+                        audioData->buffer = (uint8_t*)malloc(bufferOffset);
+                        memcpy(audioData->buffer, combinedBuffer, bufferOffset);
+                        audioData->size = bufferOffset;
+                        
+                        if (xQueueSend(audioDataQueue, &audioData, 0) != pdTRUE) {
+                            free(audioData->buffer);
+                            delete audioData;
+                        }
+                        
+                        bufferOffset = 0;
+                        frameCount = 0;
+                    }
+                }
+
+                if (silence > 20) {  // 静音超过一定时间，结束录音
+                    adc_start_flag = 0;
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(40));
+            }
+            
+            free(combinedBuffer);
+            digitalWrite(led2, LOW);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+// 添加发送任务函数
+void sendTask(void *parameter) {
+    while(1) {
+        AudioData* audioData;
+        if (xQueueReceive(audioDataQueue, &audioData, portMAX_DELAY) == pdTRUE) {
+            sendAudioData(audioData->buffer, audioData->size);
+            free(audioData->buffer);
+            delete audioData;
+        }
+    }
+}
 
 void gain_token(void);
 void getText(String role, String content);
@@ -178,160 +311,130 @@ void playNextAudio() {
         // Serial.println("音频队列已空");
     }
 }
-// 修改发送音频数据的函数
+// 修改sendAudioData函数
 bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
 {
     HTTPClient http;
-    http.begin("https://srt.ttson.cn:34001/predict");
-    http.addHeader("Accept", "application/json");
+    String url = "http://192.168.13.174:5000/upload_audio";
+    http.begin(url);
 
-    // 创建multipart form数据
-    String boundary = "----WebKitFormBoundaryABC123";
-    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
-
-    // 准备WAV头
-    WAVHeader wavHeader;
-    wavHeader.chunkSize = 36 + bufferSize;
-    wavHeader.subchunk2Size = bufferSize;
-
-    // 构建完整的POST数据
-    String body = "--" + boundary + "\r\n";
-    body += "Content-Disposition: form-data; name=\"content\"; filename=\"audio.wav\"\r\n";
-    body += "Content-Type: audio/wav\r\n\r\n";
-
-    // 计算总长度并分配内存
-    size_t totalSize = body.length() + sizeof(WAVHeader) + bufferSize + ("\r\n--" + boundary + "--\r\n").length();
-    uint8_t* postData = new uint8_t[totalSize];
-    size_t currentPos = 0;
-
-    // 复制表单头
-    memcpy(postData, body.c_str(), body.length());
-    currentPos += body.length();
-
-    // 复制WAV头
-    memcpy(postData + currentPos, &wavHeader, sizeof(WAVHeader));
-    currentPos += sizeof(WAVHeader);
-
-    // 复制音频数据
-    memcpy(postData + currentPos, audioBuffer, bufferSize);
-    currentPos += bufferSize;
-
-    // 复制结束边界
-    String endBoundary = "\r\n--" + boundary + "--\r\n";
-    memcpy(postData + currentPos, endBoundary.c_str(), endBoundary.length());
-
-    // 发送POST请求
-    int httpCode = http.POST(postData, totalSize);
-    delete[] postData;
-
-    if (httpCode == HTTP_CODE_OK) {
-        String response = http.getString();
-        DynamicJsonDocument doc(1024);
-        DeserializationError error = deserializeJson(doc, response);
-        
-        if (!error) {
-            String transcription = doc["transcription"].as<String>();
-            Serial.println("转录结果: " + transcription);
-            if (transcription.length() > 0) {
-                askquestion = transcription;
-                http.end();
-                return true;
-            }
-        }
-        else
-        {
-            Serial.println("转录结果为空");
-        }
-    } else {
-        Serial.printf("HTTP请求失败，错误码: %d\n", httpCode);
-    }
+    String username = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjExMCwic2NvcGUiOlsxXSwiaWF0IjoxNzMwODI0Mjc2LCJleHAiOjE3MzM0MTYyNzZ9.N4J4eJUM8Ombg7esoKhCQUEqPXRw8C6MWpag6BJ46e8";
+    http.setAuthorization(username.c_str(), "");
+    http.addHeader("Content-Type", "application/json");
     
+    if (audioBuffer != nullptr && bufferSize > 0) {
+        // 创建WAV头
+        WAVHeader header;
+        header.chunkSize = 36 + bufferSize;
+        header.subchunk2Size = bufferSize;
+
+        // 使用较小的缓冲区大小
+        const size_t CHUNK_SIZE = 512;
+        uint8_t* chunk = (uint8_t*)malloc(CHUNK_SIZE);
+        if (!chunk) {
+            Serial.println("缓冲区分配失败");
+            http.end();
+            return false;
+        }
+
+        // 创建一个预估大小的JSON文档
+        const size_t estimated_base64_size = (bufferSize + sizeof(WAVHeader)) * 4 / 3 + 4; // base64编码后的预估大小
+        const size_t json_doc_size = estimated_base64_size + 256; // 添加一些额外空间用于JSON结构
+        
+        DynamicJsonDocument doc(json_doc_size);
+        doc["role_id"] = 2;
+        
+        // 分块构建base64字符串
+        String base64Audio = "";
+        
+        // 首先编码WAV头
+        memcpy(chunk, &header, sizeof(WAVHeader));
+        base64Audio = base64::encode(chunk, sizeof(WAVHeader));
+        
+        // 分块编码音频数据
+        size_t offset = 0;
+        while (offset < bufferSize) {
+            size_t current_chunk_size = min(CHUNK_SIZE, bufferSize - offset);
+            memcpy(chunk, audioBuffer + offset, current_chunk_size);
+            base64Audio += base64::encode(chunk, current_chunk_size);
+            offset += current_chunk_size;
+        }
+        
+        free(chunk);
+        
+        // 添加到JSON文档
+        doc["chunk"] = base64Audio;
+        doc["silent_threshold"] = 1000;
+
+        // 序列化JSON
+        String jsonBody;
+        serializeJson(doc, jsonBody);
+        //打印发送的json
+        Serial.println(jsonBody);
+
+        // 发送请求
+        int httpResponseCode = http.POST(jsonBody);
+        Serial.printf("HTTP响应码: %d\n", httpResponseCode);
+
+        if (httpResponseCode > 0) {
+            String response = http.getString();
+            Serial.println("服务器响应: " + response);
+            // 分割响应字符串并处理音频URL
+            int startPos = 0;
+            int endPos = 0;
+            bool hasAddedAudio = false;
+
+            while ((endPos = response.indexOf("}", startPos)) != -1) {
+                String jsonPart = response.substring(startPos, endPos + 1);
+                
+                DynamicJsonDocument responseDoc(1024);
+                DeserializationError error = deserializeJson(responseDoc, jsonPart);
+                
+                if (!error) {
+                    if (responseDoc.containsKey("voice_path") && 
+                        responseDoc.containsKey("url") && 
+                        responseDoc.containsKey("port")) {
+                        
+                        String voicePath = responseDoc["voice_path"].as<String>();
+                        String baseUrl = responseDoc["url"].as<String>();
+                        int port = responseDoc["port"].as<int>();
+                        
+                        String token = "ht-4b8536b544e0784309820c3d11649a14";
+                        voicePath = voicePath.substring(0, voicePath.length() - 4) + ".mp3";
+
+                        String audioUrl = baseUrl + ":" + String(port) + 
+                                        "/flashsummary/retrieveFileData?stream=True" + 
+                                        "&token=" + token + 
+                                        "&voice_audio_path=" + voicePath;
+                        
+                        audioQueue.push(audioUrl);
+                        hasAddedAudio = true;
+                    }
+                }
+                startPos = endPos + 1;
+            }
+
+            if (hasAddedAudio && audio2.isplaying == 0) {
+                playNextAudio();
+            }
+            
+            http.end();
+            return hasAddedAudio;
+        }
+        
+        Serial.printf("HTTP错误: %d\n", httpResponseCode);
+        http.end();
+        return false;
+    }
+
     http.end();
     return false;
 }
-
 // 修改 recordAndSendAudio 函数
-void recordAndSendAudio()
-{
-    const int FRAME_SIZE = 1280;  // 每帧数据大小
-    const int MAX_BUFFER_SIZE = FRAME_SIZE * 25;  // 从50帧减少到25帧
-  // 检查可用内存
-    if (ESP.getFreeHeap() < MAX_BUFFER_SIZE + 1024) {  // 预留1KB缓冲
-        Serial.println("内存不足，无法开始录音");
-        return;
-    }
-    
-    uint8_t* audioBuffer = new uint8_t[MAX_BUFFER_SIZE];
-    if (!audioBuffer) {
-        Serial.println("内存分配失败");
-        return;
-    }
-    
-    Serial.println("开始录音和发送");
+void recordAndSendAudio() {
+    recordState = CALIBRATING;
     digitalWrite(led2, HIGH);
-    
-
-    int bufferPos = 0;
-    const int CALIBRATION_FRAMES = 10;  // 校准帧数
-    float noiseLevel = 0;
-    
-    // 先采集环境噪音
-    for(int i = 0; i < CALIBRATION_FRAMES; i++) {
-        audio1.Record();
-        float rms = calculateRMS((uint8_t *)audio1.wavData[0], FRAME_SIZE);
-        noiseLevel += rms;
-        delay(30);
-    }
-    noiseLevel /= CALIBRATION_FRAMES;
-    
-    // VAD 相关参数
-    const float VOICE_THRESHOLD = noiseLevel * 1.5;  // 动态阈值
-    const int VOICE_HOLD_FRAMES = 10;  // 保持检测的帧数
-    const int MAX_SILENCE_FRAMES = 30;  // 最大静音帧数
-    
-    int silenceCount = 0;
-    int voiceCount = 0;
-    bool hasVoiceStarted = false;
-    unsigned long startTime = millis();
-    
-    while ((millis() - startTime) < 20000) { // 最长录音20秒
-        audio1.Record();
-        float rms = calculateRMS((uint8_t *)audio1.wavData[0], FRAME_SIZE);
-        Serial.println(rms);
-        // 检测到声音
-        if (rms > VOICE_THRESHOLD) {
-            voiceCount++;
-            silenceCount = 0;
-            
-            if (voiceCount >= VOICE_HOLD_FRAMES) {
-                hasVoiceStarted = true;
-            }
-        } else {
-            voiceCount = 0;
-            if (hasVoiceStarted) {
-                silenceCount++;
-            }
-        }
-        
-        if (hasVoiceStarted && bufferPos < MAX_BUFFER_SIZE) {
-            memcpy(audioBuffer + bufferPos, audio1.wavData[0], FRAME_SIZE);
-            bufferPos += FRAME_SIZE;
-        }
-        
-        if ((hasVoiceStarted && silenceCount >= MAX_SILENCE_FRAMES) || 
-            bufferPos >= MAX_BUFFER_SIZE) {
-            break;
-        }
-        
-        delay(30);
-    }
-    
-    if (bufferPos > 0 && hasVoiceStarted) {
-        sendAudioData(audioBuffer, bufferPos);
-    }
-    
-    heap_caps_free(audioBuffer);  // 使用heap_caps_free释放内存
-    digitalWrite(led2, LOW);
+    Serial.println("开始录音校准");
 }
 
 void getTimeFromServer()
@@ -350,6 +453,15 @@ void getTimeFromServer()
 
 void setup()
 {
+    // 在其他初始化代码之前添加
+    if(psramFound()) {
+        Serial.println("PSRAM 已找到并初始化");
+        Serial.printf("Total PSRAM: %d bytes\n", ESP.getPsramSize());
+        Serial.printf("Free PSRAM: %d bytes\n", ESP.getFreePsram());
+    } else {
+        Serial.println("未找到PSRAM，将使用普通内存");
+    }
+    
     // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     Serial.begin(115200);
     // pinMode(ADC,ANALOG);
@@ -393,47 +505,53 @@ void setup()
     Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
     Serial.printf("Total PSRAM: %d\n", ESP.getPsramSize());
     Serial.printf("Free PSRAM: %d\n", ESP.getFreePsram());
+
+    // 创建音频数据队列
+    audioDataQueue = xQueueCreate(AUDIO_QUEUE_LENGTH, sizeof(AudioData*));
+    
+    // 创建录音和发送任务
+    xTaskCreatePinnedToCore(
+        recordTask,          // 任务函数
+        "RecordTask",        // 任务名称
+        8192,               // 堆栈大小
+        NULL,               // 务参数
+        1,                  // 任务优先级
+        NULL,               // 任务句柄
+        0                   // 在核心0上运行
+    );
+    
+    xTaskCreatePinnedToCore(
+        sendTask,           // 任务函数
+        "SendTask",         // 任务名称
+        8192,               // 堆栈大小
+        NULL,               // 任务参数
+        1,                  // 任务优先级
+        NULL,               // 任务句柄
+        1                   // 在核心1上运行
+    );
 }
 
 void loop()
 {
-
-    // webSocketClient.poll();
-    // webSocketClient1.poll();
-    // delay(10);
     audio2.loop();
-
-    if (audio2.isplaying == 1)
-    {
+    
+    if (audio2.isplaying == 1) {
         digitalWrite(led3, HIGH);
-    }
-    else
-    {
+    } else {
         digitalWrite(led3, LOW);
-        // 当前音频播放结束，检查是否有下一个音频需要播放
         playNextAudio();
     }
-
-    // if (digitalRead(17) == HIGH)
-
-    if (digitalRead(key) == 1)
-    {
+    
+    if (digitalRead(key) == 0) {
         audio2.isplaying = 0;
         startPlay = false;
         isReady = false;
         Answer = "";
         Serial.printf("开始识别\r\n\r\n");
-
-        adc_start_flag = 1;
-
-        askquestion = "";
-        // audio2.connecttospeech(askquestion.c_str(), "zh");
         recordAndSendAudio();
-        adc_complete_flag = 0;
-
-        // Serial.println(text);
-        // checkLen(text);
     }
+    
+    processAudioState();  // 处理录音状态机
 }
 
 void getText(String role, String content)
@@ -478,6 +596,118 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
     sum /= (bufferSize / 2);
 
     return sqrt(sum);
+}
+
+
+// 在 loop 函数中添加状态机处理
+void processAudioState() {
+    const int FRAME_SIZE = 1280;
+    const int FRAMES_TO_SEND = 12;
+    
+    switch(recordState) {
+        case CALIBRATING: {
+            static int calibrationCount = 0;
+            static float totalNoise = 0;
+            
+            if (millis() - lastProcessTime >= 40) {  // 每40ms处理一次
+                lastProcessTime = millis();
+                
+                audio1.Record();
+                float rms = calculateRMS((uint8_t *)audio1.wavData[0], FRAME_SIZE);
+                totalNoise += rms;
+                calibrationCount++;
+                
+                if (calibrationCount >= 10) {
+                    noiseLevel = (totalNoise / calibrationCount) * 1.5;
+                    Serial.printf("噪音基准: %f\n", noiseLevel);
+                    
+                    // 准备录音缓冲区
+                    if (audioBuffer == nullptr) {
+                        audioBuffer = (uint8_t*)malloc(FRAME_SIZE * FRAMES_TO_SEND);
+                    }
+                    
+                    if (audioBuffer == nullptr) {
+                        Serial.println("内存分配失败");
+                        recordState = IDLE;
+                        digitalWrite(led2, LOW);
+                    } else {
+                        recordState = RECORDING;
+                        bufferOffset = 0;
+                        frameCount = 0;
+                        silence = 0;
+                        voice = 0;
+                        voicebegin = 0;
+                    }
+                    
+                    calibrationCount = 0;
+                    totalNoise = 0;
+                }
+            }
+            break;
+        }
+        
+        case RECORDING: {
+            if (millis() - lastProcessTime >= 40) {  // 每40ms处理一次
+                lastProcessTime = millis();
+                
+                audio1.Record();
+                float rms = calculateRMS((uint8_t *)audio1.wavData[0], FRAME_SIZE);
+                
+                if (rms > noiseLevel) {
+                    voice++;
+                    if (voice >= 3) {
+                        voicebegin = 1;
+                        silence = 0;
+                    }
+                } else {
+                    if (voicebegin) {
+                        silence++;
+                    }
+                }
+                
+                if (voicebegin == 1) {
+                    memcpy(audioBuffer + bufferOffset, audio1.wavData[0], FRAME_SIZE);
+                    bufferOffset += FRAME_SIZE;
+                    frameCount++;
+                    
+                    if (frameCount >= FRAMES_TO_SEND) {
+                        recordState = SENDING;
+                    }
+                }
+            }
+            break;
+        }
+        
+        case SENDING: {
+            if (bufferOffset > 0) {
+                if (sendAudioData(audioBuffer, bufferOffset)) {
+                    Serial.println("音频数据已发送并加入队列，停止录音");
+                    bufferOffset = 0;
+                    frameCount = 0;
+                    recordState = IDLE;  // 有音频返回，停止录音
+                } else {
+                    // 返回false表示继续录音
+                    bufferOffset = 0;
+                    frameCount = 0;
+                    recordState = RECORDING;  // 继续录音
+                }
+            } else {
+                recordState = IDLE;
+            }
+            
+            if (recordState == IDLE) {
+                if (audioBuffer != nullptr) {
+                    free(audioBuffer);
+                    audioBuffer = nullptr;
+                }
+                digitalWrite(led2, LOW);
+            }
+            break;
+        }
+        
+        default:
+            break;
+    }
 }
 
 
