@@ -21,9 +21,6 @@ const char *wifiData[][2] = {
     // 继续添加需要的 Wi-Fi 名称和密码
 };
 
-String APPID = "72e78f96";
-String APIKey = "7d40a5a094a70adb709169ed3be2aac1";
-String APISecret = "Zjc3ZGM2YjY4M2ExNTJlM2JmNWI2NjJl";
 // 在全局变量区域添加
 enum RecordState {
     IDLE,
@@ -106,7 +103,7 @@ void recordTask(void *parameter) {
             int voice = 0;
             int voicebegin = 0;
             int frameCount = 0;
-            const int FRAMES_TO_SEND = 20;
+            const int FRAMES_TO_SEND = 10;
             const size_t FRAME_SIZE = 1280;
             
             uint8_t* combinedBuffer = (uint8_t*)malloc(FRAME_SIZE * FRAMES_TO_SEND);
@@ -245,43 +242,6 @@ void wifiConnect(const char *wifiData[][2], int numNetworks)
         }
     }
 }
-
-String getUrl(String Spark_url, String host, String path, String Date)
-{
-
-    // 拼接字符串
-    String signature_origin = "host: " + host + "\n";
-    signature_origin += "date: " + Date + "\n";
-    signature_origin += "GET " + path + " HTTP/1.1";
-    // signature_origin="host: spark-api.xf-yun.com\ndate: Mon, 04 Mar 2024 19:23:20 GMT\nGET /v3.1/chat HTTP/1.1";
-
-    // hmac-sha256 加密
-    unsigned char hmac[32];
-    mbedtls_md_context_t ctx;
-    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA256;
-    const size_t messageLength = signature_origin.length();
-    const size_t keyLength = APISecret.length();
-    mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type), 1);
-    mbedtls_md_hmac_starts(&ctx, (const unsigned char *)APISecret.c_str(), keyLength);
-    mbedtls_md_hmac_update(&ctx, (const unsigned char *)signature_origin.c_str(), messageLength);
-    mbedtls_md_hmac_finish(&ctx, hmac);
-    mbedtls_md_free(&ctx);
-
-    // base64 编码
-    String signature_sha_base64 = base64::encode(hmac, sizeof(hmac) / sizeof(hmac[0]));
-
-    // 替换Date
-    Date.replace(",", "%2C");
-    Date.replace(" ", "+");
-    Date.replace(":", "%3A");
-    String authorization_origin = "api_key=\"" + APIKey + "\", algorithm=\"hmac-sha256\", headers=\"host date request-line\", signature=\"" + signature_sha_base64 + "\"";
-    String authorization = base64::encode(authorization_origin);
-    String url = Spark_url + '?' + "authorization=" + authorization + "&date=" + Date + "&host=" + host;
-    Serial.println(url);
-    return url;
-}
-
 // 添加WAV文件头结构
 struct WAVHeader {
     char riff[4] = {'R', 'I', 'F', 'F'};
@@ -315,7 +275,7 @@ void playNextAudio() {
 bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize)
 {
     HTTPClient http;
-    String url = "http://192.168.13.174:5000/upload_audio";
+    String url = "http://101.35.160.32:5000/v1/device/voice_to_voice";
     http.begin(url);
 
     String username = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsInR5cGUiOjExMCwic2NvcGUiOlsxXSwiaWF0IjoxNzMwODI0Mjc2LCJleHAiOjE3MzM0MTYyNzZ9.N4J4eJUM8Ombg7esoKhCQUEqPXRw8C6MWpag6BJ46e8";
@@ -488,8 +448,6 @@ void setup()
     // 设置较小的音量以减少内存使用
     audio2.setVolume(15);  // 从20降到15
 
-    // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
-    url = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
     // url1 = getUrl("ws://localhost:8765", "localhost", "/wss", Date);
     //  ip最后一个.后面的字符替换为174
     String ip = WiFi.localIP().toString();
@@ -602,7 +560,7 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
 // 在 loop 函数中添加状态机处理
 void processAudioState() {
     const int FRAME_SIZE = 1280;
-    const int FRAMES_TO_SEND = 12;
+    const int FRAMES_TO_SEND = 10;
     
     switch(recordState) {
         case CALIBRATING: {
