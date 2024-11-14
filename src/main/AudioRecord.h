@@ -1,5 +1,5 @@
-#ifndef _AUDIO_H
-#define _AUDIO_H
+#ifndef _AUDIORECORD_H
+#define _AUDIORECORD_H
 
 #include <Arduino.h>
 #include "base64.h"
@@ -8,7 +8,7 @@
 #include <ArduinoJson.h>
 
 // 16bit, monoral, 16000Hz,  linear PCM
-class Audio1
+class AudioRecord
 {
   I2S *i2s;
   static const int headerSize = 44;
@@ -41,11 +41,11 @@ public:
   char **wavData;                          // It's divided. Because large continuous memory area can't be allocated in esp32.
   byte paddedHeader[headerSize + 4] = {0}; // The size must be multiple of 3 for Base64 encoding. Additional byte size must be even because wave data is 16bit.
 
-  Audio1();
-  ~Audio1();
+  AudioRecord();
+  ~AudioRecord();
   void Record();
   void clear();
   void init();
 };
 
-#endif // _AUDIO_H
+#endif // _AUDIORECORD_H

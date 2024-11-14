@@ -1,8 +1,8 @@
-#include "Audio1.h"
+#include "AudioRecord.h"
 
-Audio1::Audio1()
+AudioRecord::AudioRecord()
 {
-  // ���캯���н��������ĳ�ʼ�������������ڴ������������������Ĳ���
+  // 캯нĳʼڴĲ
   wavData = nullptr;
   i2s = nullptr;
   i2s = new I2S();
@@ -12,7 +12,7 @@ Audio1::Audio1()
   // i2s = new I2S(micType);
 }
 
-Audio1::~Audio1()
+AudioRecord::~AudioRecord()
 {
   for (int i = 0; i < wavDataSize / dividedWavDataSize; ++i)
     delete[] wavData[i];
@@ -20,19 +20,19 @@ Audio1::~Audio1()
   delete i2s;
 }
 
-void Audio1::init()
+void AudioRecord::init()
 {
   wavData = new char *[1];
   for (int i = 0; i < 1; ++i)
     wavData[i] = new char[1280];
 }
 
-void Audio1::clear()
+void AudioRecord::clear()
 {
   i2s->clear();
 }
 
-void Audio1::CreateWavHeader(byte *header, int waveDataSize)
+void AudioRecord::CreateWavHeader(byte *header, int waveDataSize)
 {
   header[0] = 'R';
   header[1] = 'I';
@@ -81,7 +81,7 @@ void Audio1::CreateWavHeader(byte *header, int waveDataSize)
   header[43] = (byte)((waveDataSize >> 24) & 0xFF);
 }
 
-void Audio1::Record()
+void AudioRecord::Record()
 {
 
   i2s->Read(i2sBuffer, i2sBufferSize);
@@ -129,7 +129,7 @@ void Audio1::Record()
   // return Question;
 }
 
-String Audio1::parseJSON(const char *jsonResponse)
+String AudioRecord::parseJSON(const char *jsonResponse)
 {
   DynamicJsonDocument doc(1024);
 
@@ -142,29 +142,29 @@ String Audio1::parseJSON(const char *jsonResponse)
     return String("");
   }
 
-  // 提取并返�?"question"
+  // 提取并返?"question"
   const char *question = doc["result"][0];
   return String(question);
 }
 
-float Audio1::calculateRMS(uint8_t *buffer, int bufferSize)
+float AudioRecord::calculateRMS(uint8_t *buffer, int bufferSize)
 {
   float sum = 0;
   int16_t sample;
 
-  // ÿ�ε������������ֽڣ�16λ��
+  // ÿεֽڣ16λ
   for (int i = 0; i < bufferSize; i += 2)
   {
-    // �ӻ������л�ȡ16λ���������ǵ��ֽ�˳��
+    // ӻлȡ16λǵֽ˳
     sample = (buffer[i + 1] << 8) | buffer[i];
 
-    // ����������ƽ�����ۼ�
+    // ƽۼ
     sum += sample * sample;
   }
 
-  // ����ƽ��ֵ
+  // ƽֵ
   sum /= (bufferSize / 2);
 
-  // ����RMSֵ
+  // RMSֵ
   return sqrt(sum);
 }
