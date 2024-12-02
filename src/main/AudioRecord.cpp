@@ -83,50 +83,21 @@ void AudioRecord::CreateWavHeader(byte *header, int waveDataSize)
 
 void AudioRecord::Record()
 {
-
   i2s->Read(i2sBuffer, i2sBufferSize);
+  const float gain = 5;  // 增益系数，可以根据需要调整
+
   for (int i = 0; i < i2sBufferSize / 8; ++i)
   {
-    wavData[0][2 * i] = i2sBuffer[8 * i + 2];
-    wavData[0][2 * i + 1] = i2sBuffer[8 * i + 3];
+    int16_t sample = (i2sBuffer[8 * i + 3] << 8) | i2sBuffer[8 * i + 2];
+    sample = static_cast<int16_t>(sample * gain);  // 应用增益
+
+    // 确保增益后的值不超过16位整数的范围
+    if (sample > 32767) sample = 32767;
+    if (sample < -32768) sample = -32768;
+
+    wavData[0][2 * i] = sample & 0xFF;
+    wavData[0][2 * i + 1] = (sample >> 8) & 0xFF;
   }
-
-  // client.print("\r\n");
-
-  // unsigned long startTime = millis();
-  // while (_client->available() == 0)
-  // {
-  //   if (millis() - startTime > 5000)
-  //   { // 5çťćç§´éďż?
-  //     Serial.println(">>> Client Timeout!");
-  //     _client->stop();
-  //     return "false";
-  //   }
-  // }
-  // // Serial.println("123");
-  // char c = 0;
-  // int q = 0;
-
-  // if (_client->available())
-  // {
-  //   String response = _client->readString();
-
-  //   Serial.println(response);
-
-  //   int jsonStartIndex = response.indexOf("\r\n\r\n") + 4;
-  //   String jsonResponse = response.substring(jsonStartIndex);
-
-  //   Question = parseJSON(jsonResponse.c_str());
-  //   // int len = Question.length();
-  //   // Question = Question.substring(0, (len - 1));
-  //   // Question = "\"" + Question + "\"";
-  //   Serial.println(Question);
-  // }
-
-  // Serial.println("456");
-
-  // _client->stop();
-  // return Question;
 }
 
 String AudioRecord::parseJSON(const char *jsonResponse)

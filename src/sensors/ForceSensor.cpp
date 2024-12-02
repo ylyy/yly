@@ -29,6 +29,10 @@ String ForceSensor::getForceLevel(float voltage) {
     }
 }
 
+void ForceSensor::setHttpResponseCallback(HttpResponseCallback callback) {
+    _responseCallback = callback;
+}
+
 void ForceSensor::sendForceUpdate(const char* part, const String& force) {
     HTTPClient http;
     http.begin(ApiConfig::getSensorToVoiceUrl());
@@ -39,7 +43,7 @@ void ForceSensor::sendForceUpdate(const char* part, const String& force) {
     
     // 准备JSON数据
     DynamicJsonDocument doc(200);
-    doc["role_id"] = 1;
+    doc["role_id"] = 4;
     doc["part"] = part;
     doc["force"] = force;
     
@@ -51,6 +55,11 @@ void ForceSensor::sendForceUpdate(const char* part, const String& force) {
     if (httpResponseCode > 0) {
         String response = http.getString();
         Serial.printf("HTTP Response: %s\n", response.c_str());
+        
+        // 使用回调函数而不是直接处理
+        if (_responseCallback) {
+            _responseCallback(response);
+        }
     } else {
         Serial.printf("HTTP Error: %d\n", httpResponseCode);
     }

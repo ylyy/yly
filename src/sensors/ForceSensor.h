@@ -5,15 +5,19 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
+// 添加回调函数类型定义
+typedef void (*HttpResponseCallback)(const String& response);
+
 class ForceSensor {
 public:
     ForceSensor();
     void begin();
     void update();
+    void setHttpResponseCallback(HttpResponseCallback callback);
 
 private:
     static const int NUM_SENSORS = 4;
-    const uint8_t SENSOR_PINS[NUM_SENSORS] = {22, 23, 24, 25};  // 腿，背，胸，私处
+    const uint8_t SENSOR_PINS[NUM_SENSORS] = {32, 33, 34, 35};  // 腿，背，胸，私处
     const char* BODY_PARTS[NUM_SENSORS] = {"腿部", "背部", "胸部", "私处"};
     
     // 力度阈值（根据实际情况调整）
@@ -27,6 +31,7 @@ private:
     float readVoltage(uint8_t pin);
     String getForceLevel(float voltage);
     void sendForceUpdate(const char* part, const String& force);
+    HttpResponseCallback _responseCallback;
 };
 
 #endif 

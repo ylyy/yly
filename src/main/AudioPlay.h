@@ -129,6 +129,7 @@ public:
     bool connecttoSD(const char *path, int32_t resumeFilePos = -1);
     bool setFileLoop(bool input); // TEST loop
     void setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl);
+    void reset();
     bool setAudioPlayPosition(uint16_t sec);
     bool setFilePos(uint32_t pos);
     bool audioFileSeek(const float speed);
@@ -145,7 +146,7 @@ public:
     uint8_t getVolume();
     uint8_t maxVolume();
     uint8_t getI2sPort();
-
+    bool m_f_running = false;
     uint32_t getAudioDataStartPos();
     uint32_t getFileSize();
     uint32_t getFilePos();
@@ -640,7 +641,7 @@ private:
     bool m_f_unsync = false;                 // set within ID3 tag but not used
     bool m_f_exthdr = false;                 // ID3 extended header
     bool m_f_ssl = false;
-    bool m_f_running = false;
+
     bool m_f_firstCall = false;         // InitSequence for processWebstream and processLokalFile
     bool m_f_chunked = false;           // Station provides chunked transfer
     bool m_f_firstmetabyte = false;     // True if first metabyte (counter)

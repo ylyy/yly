@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, url_for
 import base64
 import os
 import io
 import wave
 from datetime import datetime
 import logging
+from pydub import AudioSegment
+import uuid
 
 app = Flask(__name__)
 
@@ -20,6 +22,24 @@ if not os.path.exists(AUDIO_DIR):
 # 存储当前正在处理的音频片段
 current_audio_chunks = []
 current_session_id = None
+
+# 配置静态文件目录
+MP3_DIR = os.path.abspath("temp/tts")
+app.config['MP3_DIR'] = MP3_DIR
+if not os.path.exists(MP3_DIR):
+    os.makedirs(MP3_DIR)
+
+def get_server_info(request=None):
+    """获取当前服务器的访问地址和端口"""
+    if request:
+        # 在请求上下文中使用request对象
+        host = request.host.split(':')[0]  # 获取主机地址
+        port = request.host.split(':')[1] if ':' in request.host else '5000'  # 获取端口
+        scheme = request.scheme  # 获取协议(http/https)
+        return f"{scheme}://{host}", port
+    else:
+        # 在服务启动时使用默认值
+        return "http://localhost", "5000"
 
 def combine_wav_files(chunks, output_path):
     """将多个WAV音频片段组合成一个文件"""
@@ -110,9 +130,33 @@ def combine_wav_files(chunks, output_path):
         logger.error(f"组合音频文件时出错: {str(e)}", exc_info=True)
         return False
 
+def wav_to_mp3(wav_path):
+    """将WAV文件转换为MP3格式"""
+    try:
+        # 生成日期目录
+        date_dir = os.path.join(MP3_DIR, datetime.now().strftime("%Y%m%d"))
+        if not os.path.exists(date_dir):
+            os.makedirs(date_dir)
+            
+        # 生成唯一文件名
+        mp3_filename = f"{uuid.uuid4().hex[:8]}.mp3"
+        mp3_path = os.path.join(date_dir, mp3_filename)
+        logger.info(mp3_path)
+
+        # 转换格式
+        audio = AudioSegment.from_wav(wav_path)
+        audio.export(mp3_path, format="mp3")
+        
+        return mp3_path
+    except Exception as e:
+        logger.error(f"WAV转MP3失败: {str(e)}")
+        return None
+
 @app.route('/v1/device/voice_to_voice', methods=['POST'])
 def receive_audio():
     global current_audio_chunks, current_session_id
+    
+    start_time = datetime.now()  # 添加开始时间记录
     
     try:
         logger.info("收到新的音频请求")
@@ -178,7 +222,22 @@ def receive_audio():
             output_path = os.path.join(AUDIO_DIR, f"combined_{timestamp}.wav")
             
             if combine_wav_files(current_audio_chunks, output_path):
-                logger.info("音频组合成功")
+                # 转换为MP3
+                mp3_path = wav_to_mp3(output_path)
+                if not mp3_path:
+                    return jsonify({
+                        "code": 1,
+                        "message": "MP3转换失败",
+                        "data": None
+                    }), 500
+                
+                # 计算相对路径
+                server_url, server_port = get_server_info()
+                relative_mp3_path = f"/audio/{datetime.now().strftime('%Y%m%d')}/{os.path.basename(mp3_path)}"
+                
+                elapsed_time = (datetime.now() - start_time).total_seconds()
+                logger.info(f"音频处理成功，总耗时: {elapsed_time:.3f} 秒")
+                
                 # 清空当前会话
                 current_audio_chunks = []
                 current_session_id = None
@@ -187,7 +246,10 @@ def receive_audio():
                     "code": 0,
                     "message": "音频处理成功",
                     "data": {
-                        "file_path": output_path
+                        "voice_path": relative_mp3_path,
+                        "url": server_url,
+                        "port": server_port,
+                        "process_time": f"{elapsed_time:.3f}"
                     }
                 })
             else:
@@ -199,21 +261,42 @@ def receive_audio():
                 }), 500
         
         # 如果不是最后一个片段，返回继续接收的响应
-        logger.info("成功接收音频片段")
+        elapsed_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"片段理完成，耗时: {elapsed_time:.3f} 秒")
         return jsonify({
             "code": 0,
             "message": "片段接收成功",
-            "data": None
+            "data": {
+                "process_time": f"{elapsed_time:.3f}"
+            }
         })
         
     except Exception as e:
-        logger.error(f"处理请求时发生错误: {str(e)}", exc_info=True)
+        elapsed_time = (datetime.now() - start_time).total_seconds()
+        logger.error(f"处理请求时发生错误，耗时: {elapsed_time:.3f} 秒", exc_info=True)
         return jsonify({
             "code": 1,
             "message": f"处理失败: {str(e)}",
             "data": None
         }), 500
 
+# 添加静态文件服务路由
+@app.route('/audio/<path:filename>')
+def serve_audio(filename):
+    """提供MP3文件的访问服务"""
+    try:
+        # 构建完整的文件路径
+        file_path = os.path.join(app.config['MP3_DIR'], filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, mimetype='audio/mpeg')
+        else:
+            logger.error(f"文件不存在: {file_path}")
+            return jsonify({"code": 1, "message": "文件不存在"}), 404
+    except Exception as e:
+        logger.error(f"音频文件访问失败: {str(e)}")
+        return jsonify({"code": 1, "message": str(e)}), 404
+
 if __name__ == '__main__':
-    logger.info("服务器启动在 http://0.0.0.0:5000")
+    host, port = get_server_info()  # 不传入request参数
+    logger.info(f"服务器启动在: {host}:{port}")
     app.run(host='0.0.0.0', port=5000, debug=True)

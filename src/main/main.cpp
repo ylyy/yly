@@ -9,12 +9,8 @@
 #include <queue>
 #include "sensors/ForceSensor.h"
 #include "ApiConfig.h"
-#include <ESPAsyncWebServer.h>
-#include <SPIFFS.h>
-#include <Preferences.h>
-#include <HTTPUpdate.h>
 
-#define key 0
+#define key 12
 #define ADC 32
 #define led3 2
 #define led2 18
@@ -24,8 +20,7 @@ const char *wifiData[][2] = {
     // {"222", "12345678"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
-#define SILENCE_THRESHOLD 12  // 静音检测阈值
-const int FRAMES_TO_SEND = 6;
+const int FRAMES_TO_SEND = 3;
 
 // 在全局变量区域添加
 enum RecordState {
@@ -68,9 +63,9 @@ std::queue<String> audioQueue;
 AudioRecord audioRecord;
 AudioPlay audioPlay(false, 3, I2S_NUM_1);
 
-#define I2S_DOUT 25 // DIN
-#define I2S_BCLK 27 // BCLK
-#define I2S_LRC 26  // LRC
+#define I2S_DOUT 27 // DIN
+#define I2S_BCLK 26 // BCLK
+#define I2S_LRC 25  // LRC
 bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame);
 void processAudioState();
 void playNextAudio();
@@ -113,9 +108,13 @@ bool processHttpResponse(const String& response) {
         startPos = endPos + 1;
     }
 
-    if (hasAddedAudio && audioPlay.isplaying == 0) {
-        playNextAudio();
-    }
+    // if (hasAddedAudio) {
+    //     delay(100);  // 添加短暂延迟确保队列已更新
+    //     if (audioPlay.isplaying == 0) {
+    //         Serial.println("准备播放第一个音频");
+    //         playNextAudio();
+    //     }
+    // }
 
     return hasAddedAudio;
 }
@@ -172,104 +171,150 @@ void wifiConnect(const char *wifiData[][2], int numNetworks)
         }
     }
 }
-// 添加WAV文件头结构
+// 修改WAVHeader结构体定义，确保内存对齐
+#pragma pack(push, 1)  // 添加1字节对齐
 struct WAVHeader {
-    char riff[4] = {'R', 'I', 'F', 'F'};
-    uint32_t chunkSize;
-    char wave[4] = {'W', 'A', 'V', 'E'};
-    char fmt[4] = {'f', 'm', 't', ' '};
+    // 成员变量保持不变，但使用数组初始化语法
+    uint8_t riff[4] = {'R', 'I', 'F', 'F'};
+    uint32_t chunkSize;           // 后面再设置具体大小
+    uint8_t wave[4] = {'W', 'A', 'V', 'E'};
+    uint8_t fmt[4] = {'f', 'm', 't', ' '};
     uint32_t subchunk1Size = 16;
-    uint16_t audioFormat = 1;      // PCM格式
-    uint16_t numChannels = 1;      // 单声道
-    uint32_t sampleRate = 4000;    // 修改采样率为8kHz
-    uint32_t byteRate = 8000;     // 修改字节率 = sampleRate * numChannels * (bitsPerSample/8)
-    uint16_t blockAlign = 2;       // 数据块对齐 = numChannels * (bitsPerSample/8)
-    uint16_t bitsPerSample = 16;   // 16位深度
-    char data[4] = {'d', 'a', 't', 'a'};
-    uint32_t subchunk2Size;
+    uint16_t audioFormat = 1;
+    uint16_t numChannels = 1;
+    uint32_t sampleRate = 8000;
+    uint32_t byteRate = 16000;
+    uint16_t blockAlign = 2;
+    uint16_t bitsPerSample = 16;
+    uint8_t data[4] = {'d', 'a', 't', 'a'};
+    uint32_t subchunk2Size;       // 后面再设置具体大小
 };
+#pragma pack(pop)  // 恢复默认对齐
+
 // 新增函播放下一个音频
 void playNextAudio() {
     if (!audioQueue.empty()) {
+        Serial.println("playNextAudio");
         String audioUrl = audioQueue.front();
         audioQueue.pop();
-        Serial.println("开始播放音频: " + audioUrl);
-        audioPlay.connecttohost(audioUrl.c_str());
-    }
-    else
-    {
-        // Serial.println("音频队列已空");
+        Serial.println("\n=== 开始新音频播放流程 ===");
+
+        Serial.println("当前播放时间: " + String(millis()));
+        Serial.println("队列剩余数量: " + String(audioQueue.size()));
+        Serial.println("当前URL: " + audioUrl);
+        
+        int retryCount = 0;
+        const int maxRetries = 3;
+        bool connected = false;
+        
+        while (retryCount < maxRetries && !connected) {
+            Serial.println("尝试连接到url:" + audioUrl);
+            if (audioPlay.connecttohost(audioUrl.c_str())) {
+                connected = true;
+                Serial.println("成功连接到新音频");
+                        // 添加立即重置连接的逻辑
+
+                return;  // 成功连接后直接返回，不要继续处理
+            }
+            retryCount++;
+            delay(100);  // 重试前添加短暂延迟
+        }
+        
+        // if (!connected) {
+        //     Serial.println("连接失败，尝试播放下一个");
+        //     playNextAudio();  // 递归调用播放下一个
+        // }
     }
 }
 // 修改sendAudioData函数
 bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
 {
+    digitalWrite(led2, HIGH);  // 发送开始，LED2亮起
+    
     HTTPClient http;
     String url = ApiConfig::getVoiceToVoiceUrl();
-    Serial.println("API URL: " + url);
+    String ip = WiFi.localIP().toString();
+    ip.replace(ip.substring(ip.lastIndexOf(".") + 1), "174");
+    url1 = "http://" + ip + ":5000" + "/v1/device/voice_to_voice";
     http.begin(url);
     ApiConfig::addAuthHeader(http);
-    
+    http.addHeader("Content-Type", "application/json");  // 添加这行
+
     if (audioBuffer != nullptr && bufferSize > 0) {
-        // 创建WAV头和组合缓冲区
-        WAVHeader wavHeader;
+        WAVHeader wavHeader;  // 创建WAV头实例
+        // 设置可变的大小参数
+        wavHeader.chunkSize = 36 + bufferSize;  // 文件总长度减去8字节
+        wavHeader.subchunk2Size = bufferSize;   // 音频数据的大小
+        
+        // 分配内存并复制数据
         size_t totalSize = sizeof(WAVHeader) + bufferSize;
         uint8_t* combinedBuffer = (uint8_t*)malloc(totalSize);
-        
         if (!combinedBuffer) {
-            Serial.println("内存分配失败");
+            Serial.println("内存分配失败! 尝试清理内存...");
             return false;
         }
         
-        // 设置WAV头参数
-        wavHeader.chunkSize = 36 + bufferSize;
-        wavHeader.subchunk2Size = bufferSize;
-        
-        // 复制WAV头和音频数据到组合缓冲区
+        // 复制数据
         memcpy(combinedBuffer, &wavHeader, sizeof(WAVHeader));
         memcpy(combinedBuffer + sizeof(WAVHeader), audioBuffer, bufferSize);
         
-        // 创建一个预估大小的JSON文档
-        const size_t estimated_base64_size = totalSize * 4 / 3 + 4;
-        const size_t json_doc_size = estimated_base64_size + 256;
-        Serial.println(String("base64预估大小: ") + String(estimated_base64_size));
-        DynamicJsonDocument doc(json_doc_size);
-        doc["role_id"] = 1;
-        doc["status"] = isLastFrame ? 2 : 1;  // 根据isLastFrame设置状态
-        Serial.printf("发送帧状态: %d\n", isLastFrame ? 2 : 1);
-        // 对包WAV头的完整音频数据进行base64编码
-        String base64Audio = base64::encode(combinedBuffer, totalSize);
-        free(combinedBuffer); // 释放组合缓冲区
-        
-        if (base64Audio.length() > 0) {
-            Serial.printf("音频数据编码完成: 原始大小=%d bytes, base64大小=%d bytes\n", 
-                totalSize,
-                base64Audio.length());
-        } else {
-            Serial.println("警告: base64编码失败");
+        // base64编码
+        String base64Audio;
+        try {
+            base64Audio = base64::encode(combinedBuffer, totalSize);
+        } catch (...) {
+            Serial.println("Base64编码过程中发生错误!");
+            free(combinedBuffer);
+            return false;
         }
         
-        // 添加到JSON文档
+        // 检查base64编码结果
+        if (base64Audio.length() == 0) {
+            Serial.println("警告: base64编码结果为空!");
+            free(combinedBuffer);
+            return false;
+        }
+        
+        // 创建JSON并发送
+        const size_t json_doc_size = base64Audio.length() + 256;  // 为JSON结构预留空间
+        
+        DynamicJsonDocument doc(json_doc_size);
+        doc["role_id"] = 5;
+        doc["status"] = isLastFrame ? 2 : 1;
         doc["chunk"] = base64Audio;
-
-        // 序列化JSON
+        
+        // 释放combinedBuffer，因为已经不再需要了
+        free(combinedBuffer);
+        
         String jsonBody;
         serializeJson(doc, jsonBody);
         // 发送请求
-        int httpResponseCode = http.POST(jsonBody);
+        unsigned int httpResponseCode = http.POST(jsonBody);
         Serial.printf("HTTP响应码: %d\n", httpResponseCode);
+        String response = http.getString();  // 获取响应
         
-        if (httpResponseCode > 0) {
-            String response = http.getString();
-            Serial.printf("HTTP响应: %s\n", response.c_str());
-
-            processHttpResponse(response);
-            http.end();
-            return true;
+        if (httpResponseCode < 600) {
+           Serial.println("response:" + response);
+            // 检查响应是否包含关键字
+            if (response.indexOf("voice_path") != -1) {
+                Serial.println("找到voice_path");
+                processHttpResponse(response);
+               
+                //String audioUrl = "http://192.168.156.174:5000/audio/20241124/ceb92f20.mp3";
+                
+                //audioQueue.push(audioUrl);
+                playNextAudio();
+            } 
+             http.end();
+                digitalWrite(led2, LOW);  // 发送成功，LED2熄灭
+                return true;
         }
-        
-        Serial.printf("HTTP错误: %d\n", httpResponseCode);
+        Serial.println("httpResponseCode:" + httpResponseCode);
+        // if(httpResponseCode == -11){
+        //     Serial.println("response:" + response);
+        // }
         http.end();
+        digitalWrite(led2, LOW);  // 发送结束或失败，LED2熄灭
         return false;
     }
 
@@ -278,202 +323,55 @@ bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
 }
 // 修改 recordAndSendAudio 函数
 void recordAndSendAudio() {
-    recordState = CALIBRATING;
-    Serial.println("开始录音校准");
+    // 直接进入录音状态，不需要校准
+    audioBuffer = staticAudioBuffer;
+    recordState = RECORDING;
+    bufferOffset = 0;
+    frameCount = 0;
+    silence = 0;
+    voice = 0;
+    voicebegin = 0;
 }
 
 ForceSensor forceSensor;
 
-// 添加全局变量
-AsyncWebServer server(80);  // 创建Web服务器实例,端口80
-Preferences preferences;    // 创建Preferences实例用于存储配置
-
-// 添加配网相关的处理函数
-void handleSetConfig(AsyncWebServerRequest *request) {
-    String wifi_name = request->getParam("wifi_name")->value();
-    String wifi_pwd = request->getParam("wifi_pwd")->value();
-    
-    // 保存WiFi信息到preferences
-    preferences.begin("wifi-config", false);
-    preferences.putString("ssid", wifi_name);
-    preferences.putString("password", wifi_pwd);
-    preferences.end();
-
-    // 返回成功响应
-    AsyncResponseStream *response = request->beginResponseStream("application/json");
-    response->print("{\"success\":true}");
-    request->send(response);
-
-    // 延迟重启ESP32
-    delay(1000);
-    ESP.restart();
-}
-
-// 添加WiFi扫描处理函数
-void handleWifiScan(AsyncWebServerRequest *request) {
-    int n = WiFi.scanComplete();
-    if(n == -2){
-        WiFi.scanNetworks(true); // 异步扫描
-        request->send(200, "application/json", "{\"success\":true,\"data\":[]}");
-        return;
-    }
-    
-    DynamicJsonDocument doc(4096);
-    JsonArray array = doc.to<JsonArray>();
-    
-    for (int i = 0; i < n; ++i) {
-        JsonObject wifi = array.createNestedObject();
-        wifi["ssid"] = WiFi.SSID(i);
-        wifi["rssi"] = WiFi.RSSI(i);
-        wifi["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-    }
-    
-    String response;
-    serializeJson(doc, response);
-    
-    request->send(200, "application/json", "{\"success\":true,\"data\":" + response + "}");
-    WiFi.scanDelete();
-    
-    // 开始新的扫描
-    WiFi.scanNetworks(true);
-}
-
-void setupWebServer() {
-    // 初始化SPIFFS
-    if(!SPIFFS.begin(true)){
-        Serial.println("SPIFFS挂载失败");
-        return;
-    }
-
-    // 设置路由
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-        request->send(SPIFFS, "/index.html", "text/html");
-    });
-
-    server.on("/set_config", HTTP_GET, handleSetConfig);
-    
-    server.on("/scan_wifi", HTTP_GET, handleWifiScan);
-    
-    // 启动服务器
-    server.begin();
-    Serial.println("HTTP服务器启动");
-}
-
-const char* FIRMWARE_VERSION = "1.0.0";  // 当前固件版本
-const char* OTA_UPDATE_URL = "http://your-server.com/firmware.bin";  // 替换为您的固件服务器地址
-
-// 修改检查更新的函数
-void checkForUpdates() {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi未连接，跳过固件检查");
-        return;
-    }
-
-    Serial.println("检查固件更新...");
-    HTTPClient http;
-    http.begin("http://your-server.com/version.json");  // 替换为您的版本检查接口
-    int httpCode = http.GET();
-
-    if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
-        DynamicJsonDocument doc(1024);
-        DeserializationError error = deserializeJson(doc, payload);
-        
-        if (!error) {
-            const char* latestVersion = doc["version"];
-            const char* firmwareUrl = doc["url"];
-            
-            Serial.printf("当前版本: %s, 最新版本: %s\n", FIRMWARE_VERSION, latestVersion);
-            
-            if (String(latestVersion) != String(FIRMWARE_VERSION)) {
-                Serial.println("发现新版本固件，开始更新...");
-                performUpdate(firmwareUrl);
-            } else {
-                Serial.println("当前已是最新版本");
-            }
-        }
-    } else {
-        Serial.printf("检查更新失败，HTTP错误码: %d\n", httpCode);
-    }
-    http.end();
-}
-
-// 添加执行更新的函数
-void performUpdate(const char* firmwareUrl) {
-    Serial.println("开始固件更新...");
-    
-    WiFiClientSecure client;
-    client.setInsecure();  // 如果使用HTTPS但不需要验证证书
-    
-    t_httpUpdate_return ret = httpUpdate.update(client, firmwareUrl);
-    
-    switch (ret) {
-        case HTTP_UPDATE_FAILED:
-            Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", 
-                httpUpdate.getLastError(),
-                httpUpdate.getLastErrorString().c_str());
-            break;
-            
-        case HTTP_UPDATE_NO_UPDATES:
-            Serial.println("HTTP_UPDATE_NO_UPDATES");
-            break;
-            
-        case HTTP_UPDATE_OK:
-            Serial.println("HTTP_UPDATE_OK");
-            // 更新成功后会自动重启
-            break;
-    }
+void handleHttpResponse(const String& response) {
+    processHttpResponse(response);
 }
 
 void setup() {
-    // 尝试从preferences读取WiFi配置
-    preferences.begin("wifi-config", true);
-    String saved_ssid = preferences.getString("ssid", "");
-    String saved_password = preferences.getString("password", "");
-    preferences.end();
-
-    // if (saved_ssid.length() > 0) {
-    //     // 如果有保存的WiFi信息,尝试连接
-    //     WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
-        
-    //     int retry_count = 0;
-    //     while (WiFi.status() != WL_CONNECTED && retry_count < 30) {
-    //         delay(500);
-    //         Serial.print(".");
-    //         retry_count++;
-    //     }
-    // }
-
-    // if (WiFi.status() != WL_CONNECTED) {
-    //     // 如果无法连接已保存的WiFi,启动配网模式
-    //     WiFi.mode(WIFI_AP);
-    //     WiFi.softAP("ESP32_Config", "12345678"); // 创建AP热点
-        
-    //     Serial.println("启动配网模式");
-    //     Serial.print("AP IP地址: ");
-    //     Serial.println(WiFi.softAPIP());
-        
-    //     setupWebServer();
-    // } else {
-    //     Serial.println("WiFi连接成功");
-    //     Serial.print("IP地址: ");
-    //     Serial.println(WiFi.localIP());
-        
-    //     // WiFi连接成功后立即检查更新
-    //     checkForUpdates();
-    // }
-
-    // String Date = "Fri, 22 Mar 2024 03:35:56 GMT";
     Serial.begin(115200);
-    // pinMode(ADC,ANALOG);
     pinMode(17, INPUT);
-    pinMode(key, INPUT_PULLUP);
+    pinMode(key, INPUT);
     pinMode(34, INPUT_PULLUP);
     pinMode(35, INPUT_PULLUP);
+    pinMode(led1, OUTPUT);  // 添加LED1引脚初始化
+    pinMode(led2, OUTPUT);  // 添加LED2引脚初始化
+    digitalWrite(led1, HIGH);  // 配网开始，LED1亮起
     audioRecord.init();
 
     int numNetworks = sizeof(wifiData) / sizeof(wifiData[0]);
     wifiConnect(wifiData, numNetworks);
+    
+    digitalWrite(led1, LOW);  // 配网完成，LED1熄灭
+
+    // 在WiFi连接之前添加噪音校准
+    Serial.println("开始环境噪音校准...");
+    float totalNoise = 0;
+    const int calibrationSamples = 10;  // 采20次以获得更稳定的结果
+    //delay1s
+        delay(500);  // 等待初始化电压稳定
+
+    for(int i = 0; i < calibrationSamples; i++) {
+        audioRecord.Record();
+        float rms = calculateRMS((uint8_t *)audioRecord.wavData[0], FRAME_SIZE);
+        totalNoise += rms;
+        delay(40);  // 每次采样间隔40ms
+    }
+    
+    // noiseLevel = (totalNoise / calibrationSamples) * 2;  // 设置噪音基准为平均值的1.5倍
+    noiseLevel=100;
+    Serial.printf("环境噪音基准设置为: %f\n", noiseLevel);
 
     // 添加I2S初始化检查
     if (!audioPlay.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT)) {
@@ -482,38 +380,37 @@ void setup() {
     }
     
     // 设置较小的音量以减少内存使用
-    audioPlay.setVolume(15);  // 从20降到15
+    audioPlay.setVolume(2);  // 从20降到15
 
     forceSensor.begin();
-
-    // 添加OTA配置
-    httpUpdate.setLedPin(LED_BUILTIN, LOW);
-    
+    forceSensor.setHttpResponseCallback(handleHttpResponse);
     // 可选：设置证书（如果需要HTTPS验证）
     // httpUpdate.setCACert(rootCACertificate);
+
 }
 
-void loop()
-{
+void loop() {
     audioPlay.loop();
     
-    if (audioPlay.isplaying == 1) {
-        // 删除 digitalWrite(led3, HIGH);
-    } else {
-        // 删除 digitalWrite(led3, LOW);
-        playNextAudio();
+    if (!audioQueue.empty()) {
+        if(audioPlay.isplaying == 0){
+            playNextAudio();
+        }
     }
     
-    if (digitalRead(key) == 0) {
-        audioPlay.isplaying = 0;
+    if (digitalRead(key) == HIGH) {
+
+        audioPlay.stopSong();
+        while (!audioQueue.empty()) {  // 清空现有队列
+            audioQueue.pop();
+        }
         startPlay = false;
         isReady = false;
         adc_start_flag = 1;
         Serial.printf("开始识别\r\n\r\n");
         recordAndSendAudio();
     }
-    processAudioState();  // 处理录音状态机
-
+    processAudioState();
     forceSensor.update();
 }
 
@@ -524,7 +421,6 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
 
     for (int i = 0; i < bufferSize; i += 2)
     {
-
         sample = (buffer[i + 1] << 8) | buffer[i];
         sum += sample * sample;
     }
@@ -536,44 +432,10 @@ float calculateRMS(uint8_t *buffer, int bufferSize)
 
 // 在 loop 函数中添加状态机处理
 void processAudioState() {
-    
     switch(recordState) {
-        case CALIBRATING: {
-            static int calibrationCount = 0;
-            static float totalNoise = 0;
-            
-            if (millis() - lastProcessTime >= 40) {  // 每40ms处理一次
-                lastProcessTime = millis();
-                
-                audioRecord.Record();
-                float rms = calculateRMS((uint8_t *)audioRecord.wavData[0], FRAME_SIZE);
-                totalNoise += rms;
-                calibrationCount++;
-                
-                if (calibrationCount >= 10) {
-                    noiseLevel = 65;
-                    Serial.printf("噪音基准: %f\n", noiseLevel);
-                    
-                    // 使用静态缓冲区替代动态分配
-                    audioBuffer = staticAudioBuffer;
-                    recordState = RECORDING;
-                    bufferOffset = 0;
-                    frameCount = 0;
-                    silence = 0;
-                    voice = 0;
-                    voicebegin = 0;
-                    
-                    calibrationCount = 0;
-                    totalNoise = 0;
-                }
-            }
-            break;
-        }
-        
         case RECORDING: {
-            if (millis() - lastProcessTime >= 40) {  // 每40ms处理一次
+            if (millis() - lastProcessTime >= 30) {
                 lastProcessTime = millis();
-                Serial.println("录音中");
                 audioRecord.Record();
                 float rms = calculateRMS((uint8_t *)audioRecord.wavData[0], FRAME_SIZE);
                 
@@ -581,13 +443,11 @@ void processAudioState() {
                     voice++;
                     if (voice >= 2) {
                         voicebegin = 1;
-                        Serial.println("开始录音");
                         silence = 0;
                     }
                 } else {
                     if (voicebegin) {
                         silence++;
-                        Serial.println("静音");
                     }
                 }
                 
@@ -606,13 +466,19 @@ void processAudioState() {
         
         case SENDING: {
             if (bufferOffset > 0) {
-                bool isLastFrame = silence >= 20 ;
+                bool isLastFrame = silence >= 5;
+                
+                // 强制进行垃圾回收
+                ESP.getFreeHeap();
+                
                 if (sendAudioData(audioBuffer, bufferOffset, isLastFrame)) {
-                    
                     if (isLastFrame) {
-                        Serial.println("音频数已发送并加入队列，停止录音");
+                        Serial.println("音频发送完成，重置状态");
                         bufferOffset = 0;
                         frameCount = 0;
+                        voice = 0;
+                        voicebegin = 0;
+                        silence = 0;
                         recordState = IDLE;
                     } else {
                         bufferOffset = 0;
@@ -623,6 +489,12 @@ void processAudioState() {
             } else {
                 recordState = IDLE;
             }
+            break;
+        }
+        
+        case IDLE: {
+            // 在空闲状态下进行内存清理
+            ESP.getFreeHeap();
             break;
         }
         

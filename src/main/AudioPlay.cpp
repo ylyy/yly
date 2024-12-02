@@ -649,7 +649,6 @@ bool AudioPlay::connecttohost(const char *host, const char *user, const char *pw
     //    } fix in V2.0.8
 
     bool res = true; // no need to reconnect if connection exists
-
     if (m_f_ssl)
     {
         _client = static_cast<WiFiClient *>(&clientsecure);
@@ -2678,6 +2677,7 @@ size_t AudioPlay::process_m3u8_ID3_Header(uint8_t *packet)
 uint32_t AudioPlay::stopSong()
 {
     uint32_t pos = 0;
+    isplaying = 0;
     if (m_f_running)
     {
         m_f_running = false;
@@ -2838,12 +2838,12 @@ void AudioPlay::loop()
     { // normal process
         switch (getDatamode())
         {
-        case AUDIO_LOCALFILE:
-            processLocalFile();
-            break;
-        case HTTP_RESPONSE_HEADER:
-            parseHttpResponseHeader();
-            break;
+            case AUDIO_LOCALFILE:
+                processLocalFile();
+                break;
+            case HTTP_RESPONSE_HEADER:
+                parseHttpResponseHeader();
+                break;
         // case AUDIO_PLAYLISTINIT:
         //     readPlayListData();
         //     break;
@@ -2855,12 +2855,12 @@ void AudioPlay::loop()
         //     if (m_playlistFormat == FORMAT_ASX)
         //         connecttohost(parsePlaylist_ASX());
         //     break;
-        case AUDIO_DATA:
+            case AUDIO_DATA:
             if (m_streamType == ST_WEBSTREAM)
-                processWebStream();
+                        processWebStream();
             if (m_streamType == ST_WEBFILE)
-                processWebFile();
-            break;
+                    processWebFile();
+                break;
         }
     }
     // else
@@ -3715,6 +3715,18 @@ void AudioPlay::processLocalFile()
         }
     }
 }
+
+// ... 在合适的位置添加快速重置连接的方法
+void AudioPlay::reset() {
+    // 立即关闭当前连接
+    if (_client) {
+        _client->stop();
+    }
+    // 重置相关状态
+    isplaying = 0;
+    stopSong();
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 void AudioPlay::processWebStream()
 {
@@ -3827,6 +3839,19 @@ void AudioPlay::processWebStream()
             cnt = 0;
         }
     }
+    static unsigned long streamTimeout = millis(); // 初始化为当前时间
+    // if (streamDetection(availableBytes)) {
+    //     Serial.println("streamDetection");
+    //     return;
+    // // }
+    // if (_client->available()) {  // 有新数据时重置超时
+    //     streamTimeout = millis();
+    // }
+    // else if (millis() - streamTimeout > 15000) {  // 5秒内没有新数据则超时
+    //     Serial.println("streamTimeout");
+    //     reset();
+    //     return;
+    // }
 }
 //---------------------------------------------------------------------------------------------------------------------
 void AudioPlay::processWebFile()
@@ -6921,7 +6946,7 @@ size_t AudioPlay::chunkedDataTransfer(uint8_t *bytes)
     size_t chunksize = 0;
     int b = 0;
     uint32_t ctime = millis();
-    uint32_t timeout = 2000; // ms
+    uint32_t timeout = 200; // ms
     while (true)
     {
         if (ctime + timeout < millis())
@@ -7092,14 +7117,14 @@ boolean AudioPlay::streamDetection(uint32_t bytesAvail)
     static uint32_t tmr_lost = millis();
     static uint8_t cnt_slow = 0;
     static uint8_t cnt_lost = 0;
-
+    // return false;
     // if within one second the content of the audio buffer falls below the size of an audio frame 100 times,
     // issue a message
     if (tmr_slow + 1000 < millis())
     {
         tmr_slow = millis();
         if (cnt_slow > 100)
-            AUDIO_INFO("slow stream, dropouts are possible");
+            Serial.println("slow stream, dropouts are possible");
         cnt_slow = 0;
     }
     if (InBuff.bufferFilled() < InBuff.getMaxBlockSize())
@@ -7116,12 +7141,13 @@ boolean AudioPlay::streamDetection(uint32_t bytesAvail)
     if (tmr_lost < millis())
     {
         cnt_lost++;
-        tmr_lost = millis() + 1000;
+        tmr_lost = millis() + 100;
         if (cnt_lost == 5)
         { // 5s no data?
             cnt_lost = 0;
-            AUDIO_INFO("Stream lost -> try new connection");
-            connecttohost(m_lastHost);
+            Serial.println("Stream lost -> try new connection");
+            stopSong();
+            // connecttohost(m_lastHost);
             return true;
         }
     }
