@@ -9,6 +9,7 @@
 #include <queue>
 #include "sensors/ForceSensor.h"
 #include "ApiConfig.h"
+#include "time.h"
 
 #define key 12
 #define ADC 32
@@ -20,7 +21,7 @@ const char *wifiData[][2] = {
     // {"222", "12345678"},
     // 继续添加需要的 Wi-Fi 名称和密码
 };
-const int FRAMES_TO_SEND = 3;
+const int FRAMES_TO_SEND =2;
 
 // 在全局变量区域添加
 enum RecordState {
@@ -79,7 +80,8 @@ bool processHttpResponse(const String& response) {
 
     while ((endPos = response.indexOf("}", startPos)) != -1) {
         String jsonPart = response.substring(startPos, endPos + 1);
-        Serial.print(jsonPart);
+        Serial.print("处理JSON片段: ");
+        Serial.println(jsonPart);
 
         DynamicJsonDocument responseDoc(1024);
         DeserializationError error = deserializeJson(responseDoc, jsonPart);
@@ -103,18 +105,17 @@ bool processHttpResponse(const String& response) {
                 
                 audioQueue.push(audioUrl);
                 hasAddedAudio = true;
+                Serial.printf("添加音频URL到队列，当前队列大小: %d\n", audioQueue.size());
+                
+                // 如果当前没有在播放，立即开始播放
+                if (audioPlay.isplaying == 0) {
+                    Serial.println("立即开始播放新音频");
+                    playNextAudio();
+                }
             }
         }
         startPos = endPos + 1;
     }
-
-    // if (hasAddedAudio) {
-    //     delay(100);  // 添加短暂延迟确保队列已更新
-    //     if (audioPlay.isplaying == 0) {
-    //         Serial.println("准备播放第一个音频");
-    //         playNextAudio();
-    //     }
-    // }
 
     return hasAddedAudio;
 }
@@ -182,8 +183,8 @@ struct WAVHeader {
     uint32_t subchunk1Size = 16;
     uint16_t audioFormat = 1;
     uint16_t numChannels = 1;
-    uint32_t sampleRate = 8000;
-    uint32_t byteRate = 16000;
+    uint32_t sampleRate = 4000;
+    uint32_t byteRate = 8000;
     uint16_t blockAlign = 2;
     uint16_t bitsPerSample = 16;
     uint8_t data[4] = {'d', 'a', 't', 'a'};
@@ -194,36 +195,21 @@ struct WAVHeader {
 // 新增函播放下一个音频
 void playNextAudio() {
     if (!audioQueue.empty()) {
-        Serial.println("playNextAudio");
         String audioUrl = audioQueue.front();
         audioQueue.pop();
+        
         Serial.println("\n=== 开始新音频播放流程 ===");
-
-        Serial.println("当前播放时间: " + String(millis()));
         Serial.println("队列剩余数量: " + String(audioQueue.size()));
-        Serial.println("当前URL: " + audioUrl);
         
-        int retryCount = 0;
-        const int maxRetries = 3;
-        bool connected = false;
-        
-        while (retryCount < maxRetries && !connected) {
-            Serial.println("尝试连接到url:" + audioUrl);
-            if (audioPlay.connecttohost(audioUrl.c_str())) {
-                connected = true;
-                Serial.println("成功连接到新音频");
-                        // 添加立即重置连接的逻辑
-
-                return;  // 成功连接后直接返回，不要继续处理
+        if (audioPlay.connecttohost(audioUrl.c_str())) {
+            Serial.println("成功连接到新音频");
+        } else {
+            Serial.println("音频连接失败，尝试下一个");
+            // 如果连接失败，立即尝试播放队列中的下一个
+            if (!audioQueue.empty()) {
+                playNextAudio();
             }
-            retryCount++;
-            delay(100);  // 重试前添加短暂延迟
         }
-        
-        // if (!connected) {
-        //     Serial.println("连接失败，尝试播放下一个");
-        //     playNextAudio();  // 递归调用播放下一个
-        // }
     }
 }
 // 修改sendAudioData函数
@@ -242,7 +228,7 @@ bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
 
     if (audioBuffer != nullptr && bufferSize > 0) {
         WAVHeader wavHeader;  // 创建WAV头实例
-        // 设置可变的大小参数
+        // 设置变的大小参数
         wavHeader.chunkSize = 36 + bufferSize;  // 文件总长度减去8字节
         wavHeader.subchunk2Size = bufferSize;   // 音频数据的大小
         
@@ -279,10 +265,10 @@ bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
         const size_t json_doc_size = base64Audio.length() + 256;  // 为JSON结构预留空间
         
         DynamicJsonDocument doc(json_doc_size);
-        doc["role_id"] = 5;
+        doc["role_id"] = 15;
         doc["status"] = isLastFrame ? 2 : 1;
         doc["chunk"] = base64Audio;
-        
+        // doc["min_recognizable"] = 500;
         // 释放combinedBuffer，因为已经不再需要了
         free(combinedBuffer);
         
@@ -293,21 +279,37 @@ bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
         Serial.printf("HTTP响应码: %d\n", httpResponseCode);
         String response = http.getString();  // 获取响应
         
-        if (httpResponseCode < 600) {
-           Serial.println("response:" + response);
+        if (httpResponseCode > 0) {
+            Serial.println("response:" + response);
+            
+            // 添加响应内容检查
+            if (response.length() == 0 || response == "null" || response == "nullnull") {
+                Serial.println("收到无效响应");
+                http.end();
+                digitalWrite(led2, LOW);
+                return false;
+            }
+            
             // 检查响应是否包含关键字
             if (response.indexOf("voice_path") != -1) {
-                Serial.println("找到voice_path");
+                struct tm timeinfo;
+                if(getLocalTime(&timeinfo)) {
+                    char timeString[64];
+                    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
+                    Serial.println("找到voice_path，当前互联网时间:" + String(timeString));
+                } else {
+                    Serial.println("找到voice_path，获取时间失败");
+                }
                 processHttpResponse(response);
-               
-                //String audioUrl = "http://192.168.156.174:5000/audio/20241124/ceb92f20.mp3";
-                
-                //audioQueue.push(audioUrl);
                 playNextAudio();
-            } 
-             http.end();
-                digitalWrite(led2, LOW);  // 发送成功，LED2熄灭
-                return true;
+            } else {
+                // 打印解码后的响应内容
+                Serial.println("服务器返回消息：" + response);
+            }
+            
+            http.end();
+            digitalWrite(led2, LOW);
+            return true;
         }
         Serial.println("httpResponseCode:" + httpResponseCode);
         // if(httpResponseCode == -11){
@@ -338,6 +340,10 @@ ForceSensor forceSensor;
 void handleHttpResponse(const String& response) {
     processHttpResponse(response);
 }
+
+// 在全局变量区域添加
+unsigned long lastKeyPressTime = 0;
+const unsigned long KEY_DEBOUNCE_DELAY = 500; // 500ms防抖延时
 
 void setup() {
     Serial.begin(115200);
@@ -370,7 +376,7 @@ void setup() {
     }
     
     // noiseLevel = (totalNoise / calibrationSamples) * 2;  // 设置噪音基准为平均值的1.5倍
-    noiseLevel=100;
+    noiseLevel=650;
     Serial.printf("环境噪音基准设置为: %f\n", noiseLevel);
 
     // 添加I2S初始化检查
@@ -387,28 +393,35 @@ void setup() {
     // 可选：设置证书（如果需要HTTPS验证）
     // httpUpdate.setCACert(rootCACertificate);
 
+    // 在WiFi连接成功后添加
+    configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");  // 设置中国时区(UTC+8)
 }
 
 void loop() {
     audioPlay.loop();
     
-    if (!audioQueue.empty()) {
-        if(audioPlay.isplaying == 0){
-            playNextAudio();
-        }
+    // 当前音频播放完成后，立即播放下一个
+    if (!audioQueue.empty() && audioPlay.isplaying == 0) {
+        playNextAudio();
     }
     
-    if (digitalRead(key) == HIGH) {
-
-        audioPlay.stopSong();
-        while (!audioQueue.empty()) {  // 清空现有队列
-            audioQueue.pop();
+    // 添加播放状态检查
+    if (digitalRead(key) == HIGH && audioPlay.isplaying == 0) {  // 只有在不播放时才允许唤醒
+        unsigned long currentTime = millis();
+        if (currentTime - lastKeyPressTime >= KEY_DEBOUNCE_DELAY) {
+            lastKeyPressTime = currentTime;
+            
+            audioPlay.stopSong();
+            while (!audioQueue.empty()) {
+                audioQueue.pop();
+            }
+            startPlay = false;
+            isReady = false;
+            adc_start_flag = 1;
+            Serial.printf("开始识别\r\n\r\n");
+            lastProcessTime = millis();
+            recordAndSendAudio();
         }
-        startPlay = false;
-        isReady = false;
-        adc_start_flag = 1;
-        Serial.printf("开始识别\r\n\r\n");
-        recordAndSendAudio();
     }
     processAudioState();
     forceSensor.update();
@@ -438,16 +451,16 @@ void processAudioState() {
                 lastProcessTime = millis();
                 audioRecord.Record();
                 float rms = calculateRMS((uint8_t *)audioRecord.wavData[0], FRAME_SIZE);
-                
                 if (rms > noiseLevel) {
                     voice++;
-                    if (voice >= 2) {
+                    if (voice > 1) {
                         voicebegin = 1;
                         silence = 0;
                     }
                 } else {
                     if (voicebegin) {
                         silence++;
+                        Serial.println("silence:" + String(silence));
                     }
                 }
                 
@@ -466,7 +479,7 @@ void processAudioState() {
         
         case SENDING: {
             if (bufferOffset > 0) {
-                bool isLastFrame = silence >= 5;
+                bool isLastFrame = silence >= 4;
                 
                 // 强制进行垃圾回收
                 ESP.getFreeHeap();

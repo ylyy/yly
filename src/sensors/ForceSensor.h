@@ -17,12 +17,12 @@ public:
 
 private:
     static const int NUM_SENSORS = 4;
-    const uint8_t SENSOR_PINS[NUM_SENSORS] = {32, 33, 34, 35};  // 腿，背，胸，私处
-    const char* BODY_PARTS[NUM_SENSORS] = {"腿部", "背部", "胸部", "私处"};
+    const uint8_t SENSOR_PINS[NUM_SENSORS] = {32, 33, 34, 35};  // 腿，背，胸，阴
+    const char* BODY_PARTS[NUM_SENSORS] = {"腿部", "背部", "胸部", "阴部"};
     
     // 力度阈值（根据实际情况调整）
     const float LIGHT_THRESHOLD = 1.1;   // 轻度阈值
-    const float MEDIUM_THRESHOLD = 2.2;   // 中度阈值
+    const float MEDIUM_THRESHOLD = 1.7;   // 中度阈值
     
     String lastForceLevel[NUM_SENSORS];
     unsigned long lastUpdateTime[NUM_SENSORS];

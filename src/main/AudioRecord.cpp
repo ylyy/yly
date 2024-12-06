@@ -84,7 +84,7 @@ void AudioRecord::CreateWavHeader(byte *header, int waveDataSize)
 void AudioRecord::Record()
 {
   i2s->Read(i2sBuffer, i2sBufferSize);
-  const float gain = 5;  // 增益系数，可以根据需要调整
+  const float gain = 12;  // 增益系数，可以根据需要调整
 
   for (int i = 0; i < i2sBufferSize / 8; ++i)
   {
