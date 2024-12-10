@@ -10,6 +10,7 @@
 #include "sensors/ForceSensor.h"
 #include "ApiConfig.h"
 #include "time.h"
+#include <asyncHTTPrequest.h>
 
 #define key 12
 #define ADC 32
@@ -216,15 +217,48 @@ void playNextAudio() {
 bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
 {
     digitalWrite(led2, HIGH);  // 发送开始，LED2亮起
-    
-    HTTPClient http;
     String url = ApiConfig::getVoiceToVoiceUrl();
     String ip = WiFi.localIP().toString();
     ip.replace(ip.substring(ip.lastIndexOf(".") + 1), "174");
     url1 = "http://" + ip + ":5000" + "/v1/device/voice_to_voice";
-    http.begin(url);
-    ApiConfig::addAuthHeader(http);
-    http.addHeader("Content-Type", "application/json");  // 添加这行
+    static asyncHTTPrequest asyncHttp;
+
+    // 1. 添加延时，避免请求过于频繁
+    static unsigned long lastRequestTime = 0;
+    if (millis() - lastRequestTime < 80) { // 确保请求间隔至少100ms
+        delay(30);
+    }
+    lastRequestTime = millis();
+    
+    // 2. 确保之前的请求已完全清理
+    if(asyncHttp.readyState() != 0) {
+        asyncHttp.abort();
+        delay(50); // 给予系统一些时间来清理资源
+    }
+    
+    // 3. 打印完整的 URL 用于调试
+    Serial.println("Sending request to URL: " + url1);
+    
+    // // 4. 使用try-catch包装请求操作
+    // try {
+    //     if(!asyncHttp.open("POST", url1.c_str())) {
+    //         Serial.println("请求打开失败");
+    //         asyncHttp.abort();
+    //         delay(100);
+    //         return false;
+    //     }
+    // } catch(...) {
+    //     Serial.println("请求过程发生异常");
+    //     asyncHttp.abort();
+    //     delay(100);
+    //     return false;
+    // }
+    
+    // 替换为:
+    String credentials = String(ApiConfig::USERNAME) + ":" + String(ApiConfig::PASSWORD);
+    String authHeader = "Basic " + base64::encode(credentials);
+    asyncHttp.setReqHeader("Authorization", authHeader.c_str());
+    asyncHttp.setReqHeader("Content-Type", "application/json");
 
     if (audioBuffer != nullptr && bufferSize > 0) {
         WAVHeader wavHeader;  // 创建WAV头实例
@@ -265,64 +299,79 @@ bool sendAudioData(uint8_t *audioBuffer, size_t bufferSize, bool isLastFrame)
         const size_t json_doc_size = base64Audio.length() + 256;  // 为JSON结构预留空间
         
         DynamicJsonDocument doc(json_doc_size);
-        doc["role_id"] = 15;
+        doc["role_id"] = 3;
         doc["status"] = isLastFrame ? 2 : 1;
         doc["chunk"] = base64Audio;
-        // doc["min_recognizable"] = 500;
-        // 释放combinedBuffer，因为已经不再需要了
-        free(combinedBuffer);
+        doc["min_recognizable"] = 500;
         
         String jsonBody;
         serializeJson(doc, jsonBody);
-        // 发送请求
-        unsigned int httpResponseCode = http.POST(jsonBody);
-        Serial.printf("HTTP响应码: %d\n", httpResponseCode);
-        String response = http.getString();  // 获取响应
         
-        if (httpResponseCode > 0) {
-            Serial.println("response:" + response);
-            
-            // 添加响应内容检查
-            if (response.length() == 0 || response == "null" || response == "nullnull") {
-                Serial.println("收到无效响应");
-                http.end();
-                digitalWrite(led2, LOW);
-                return false;
-            }
-            
-            // 检查响应是否包含关键字
-            if (response.indexOf("voice_path") != -1) {
-                struct tm timeinfo;
-                if(getLocalTime(&timeinfo)) {
-                    char timeString[64];
-                    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
-                    Serial.println("找到voice_path，当前互联网时间:" + String(timeString));
-                } else {
-                    Serial.println("找到voice_path，获取时间失败");
+        // 只有当isLastFrame为true时，才执行下面的响应函数
+        if(isLastFrame) {
+            asyncHttp.onReadyStateChange([](void* optParm, asyncHTTPrequest* request, int readyState) {
+                if (readyState == 4) {  // 请求完成
+                    digitalWrite(led2, LOW);
+                
+                // 1. 安全获取响应
+                if (!request) {
+                    Serial.println("无效的请求对象");
+                    return;
                 }
-                processHttpResponse(response);
-                playNextAudio();
-            } else {
-                // 打印解码后的响应内容
-                Serial.println("服务器返回消息：" + response);
-            }
-            
-            http.end();
-            digitalWrite(led2, LOW);
-            return true;
+                
+                // 2. 使用局部变量存储响应
+                String response;
+                try {
+                    response = request->responseText();
+                } catch (...) {
+                    Serial.println("获取响应文本时发生错误");
+                    return;
+                }
+                
+                // 3. 验证响应内容
+                if (response.length() == 0) {
+                    Serial.println("空响应");
+                    return;
+                }
+                
+                // 4. 安全处理响应
+                if (response.indexOf("voice_path") != -1) {
+                    // 使用try-catch包装处理过程
+                    try {
+                        struct tm timeinfo;
+                        if (getLocalTime(&timeinfo)) {
+                            char timeString[64];
+                            strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
+                            Serial.println("找到voice_path，当前时间:" + String(timeString));
+                        }
+                        
+                        // 确保在处理响应前验证audioQueue未满
+                        if (audioQueue.size() < 10) { // 设置一个最大队列大小
+                            processHttpResponse(response);
+                            playNextAudio();
+                        } else {
+                            Serial.println("音频队列已满，跳过处理");
+                        }
+                    } catch (...) {
+                        Serial.println("处理响应时发生错误");
+                    }
+                } else {
+                    Serial.println("服务器返回消息：" + response);
+                    }
+                }
+            });
         }
-        Serial.println("httpResponseCode:" + httpResponseCode);
-        // if(httpResponseCode == -11){
-        //     Serial.println("response:" + response);
-        // }
-        http.end();
-        digitalWrite(led2, LOW);  // 发送结束或失败，LED2熄灭
-        return false;
+        // 发送请求
+        asyncHttp.send(jsonBody);
+        
+        free(combinedBuffer);
+        return true;
     }
 
-    http.end();
+    asyncHttp.abort();  // 使用 abort 替代 end
     return false;
 }
+
 // 修改 recordAndSendAudio 函数
 void recordAndSendAudio() {
     // 直接进入录音状态，不需要校准
@@ -385,7 +434,7 @@ void setup() {
         // 可以在这里添加重试逻辑
     }
     
-    // 设置较小的音量以减少内存使用
+    // 设置小的音量以减少内存使用
     audioPlay.setVolume(2);  // 从20降到15
 
     forceSensor.begin();
@@ -451,9 +500,10 @@ void processAudioState() {
                 lastProcessTime = millis();
                 audioRecord.Record();
                 float rms = calculateRMS((uint8_t *)audioRecord.wavData[0], FRAME_SIZE);
+                // Serial.println("rms:" + String(rms));
                 if (rms > noiseLevel) {
                     voice++;
-                    if (voice > 1) {
+                    if (voice > 1) {    
                         voicebegin = 1;
                         silence = 0;
                     }
@@ -479,7 +529,7 @@ void processAudioState() {
         
         case SENDING: {
             if (bufferOffset > 0) {
-                bool isLastFrame = silence >= 4;
+                bool isLastFrame = silence >= 8;
                 
                 // 强制进行垃圾回收
                 ESP.getFreeHeap();

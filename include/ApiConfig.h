@@ -8,6 +8,8 @@ class ApiConfig {
 public:
     static const char* const BASE_URL;
     static const char* const AUTH_TOKEN;
+    static const char* USERNAME;
+    static const char* PASSWORD;
     
     // API 端点
     static String getVoiceToVoiceUrl() { return String(BASE_URL) + "/v1/device/voice_to_voice"; }

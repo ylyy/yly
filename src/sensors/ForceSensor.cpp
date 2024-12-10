@@ -43,7 +43,7 @@ void ForceSensor::sendForceUpdate(const char* part, const String& force) {
     
     // 准备JSON数据
     DynamicJsonDocument doc(200);
-    doc["role_id"] = 15;
+    doc["role_id"] = 3;
     doc["part"] = part;
     doc["force"] = force;
     
